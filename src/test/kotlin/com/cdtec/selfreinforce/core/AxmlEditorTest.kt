@@ -13,6 +13,9 @@ class AxmlEditorTest {
     private fun sampleManifest(): ByteArray =
         javaClass.classLoader.getResourceAsStream("sample_AndroidManifest.xml")!!.readBytes()
 
+    private fun manifestWithoutAppName(): ByteArray =
+        javaClass.classLoader.getResourceAsStream("sample_manifest_no_name.xml")!!.readBytes()
+
     @Test
     fun `替换application入口并返回原值`() {
         val (patched, oldName) = AxmlEditor.replaceApplicationName(sampleManifest(), "com.selfprotect.StubApplication")
@@ -32,6 +35,16 @@ class AxmlEditorTest {
         val inUtf8 = patched.containsSequence(target.toByteArray(Charsets.UTF_8))
         val inUtf16 = patched.containsSequence(target.toByteArray(Charsets.UTF_16LE))
         assertTrue("应包含 android.app.AppComponentFactory", inUtf8 || inUtf16)
+    }
+
+    @Test
+    fun `无application-name时插入name属性`() {
+        // 样本 manifest 的 <application> 没有 android:name（默认 android.app.Application）
+        val (patched, oldName) = AxmlEditor.replaceApplicationName(manifestWithoutAppName(), "com.selfprotect.StubApplication")
+        assertEquals("android.app.Application", oldName)
+        // 幂等：二次替换能再次解析（证明插入的属性结构合法）
+        val (patched2, oldName2) = AxmlEditor.replaceApplicationName(patched, "com.selfprotect.StubApplication")
+        assertEquals("com.selfprotect.StubApplication", oldName2)
     }
 
     private fun ByteArray.containsSequence(seq: ByteArray): Boolean {

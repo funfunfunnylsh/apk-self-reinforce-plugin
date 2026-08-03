@@ -53,10 +53,7 @@ object AxmlEditor {
 
         // 1. 定位并解析字符串池（第一个 chunk 必须是字符串池）
         var pool: StringPool? = null
-        var appNameValueIndex = -1
-        var oldAppName: String? = null
-        var nameRawValueIndex = -1
-        var factoryValueIndex = -1
+        var appTag: AppTag? = null
 
         var off = buf.shortAt(2).toInt() and 0xFFFF // headerSize，通常 8
         while (off + 8 <= fileSize) {
@@ -66,14 +63,8 @@ object AxmlEditor {
             when (type) {
                 CHUNK_STRING_POOL -> pool = parseStringPool(buf, off, size)
                 CHUNK_START_TAG -> {
-                    if (pool != null && appNameValueIndex < 0) {
-                        val found = scanApplicationTag(buf, off, headerSize, pool)
-                        if (found != null) {
-                            appNameValueIndex = found.nameValueIndex
-                            oldAppName = found.oldName
-                            nameRawValueIndex = found.nameRawValueIndex
-                            factoryValueIndex = found.factoryValueIndex
-                        }
+                    if (pool != null && appTag == null) {
+                        appTag = scanApplicationTag(buf, off, headerSize, pool)
                     }
                 }
             }
@@ -81,37 +72,112 @@ object AxmlEditor {
             off += size
         }
         if (pool == null) throw AxmlException("AXML 中未找到字符串池")
+        val tag = appTag ?: throw AxmlException("AXML 中未找到 <application> 标签")
+
+        // 2. 确定要替换/写入的属性值字符串下标
+        var appNameValueIndex = tag.nameValueIndex
+        var oldAppName = tag.oldName
+        // 待插入的 android:name 属性（仅当标签原本没有 name 时非空）
+        var insertNameAttr: IntArray? = null // [nsIdx, nameStrIdx, appNameIdx]
+
         if (appNameValueIndex < 0) {
-            // application 没有配置 android:name —— 默认 android.app.Application，
-            // 不支持新增属性，交由上层决定（本实现直接报错提示）。
-            throw AxmlException("AndroidManifest 的 <application> 未配置 android:name，无法替换入口")
+            // <application> 无 android:name（默认 android.app.Application）：
+            // 向字符串池追加 "name"/android 命名空间/壳类名，并准备一个待插入的 attribute
+            val nameStrIdx = poolIndexOf(pool, "name") ?: poolAppend(pool, "name")
+            val nsIdx = poolIndexOf(pool, ANDROID_NS) ?: poolAppend(pool, ANDROID_NS)
+            val appNameIdx = poolAppend(pool, newAppName)
+            appNameValueIndex = appNameIdx
+            oldAppName = "android.app.Application"
+            insertNameAttr = intArrayOf(nsIdx, nameStrIdx, appNameIdx)
         }
 
-        // 2. 重建字符串池（替换目标下标的字符串）
+        // 3. 重建字符串池（替换目标下标 / 追加新字符串）
         pool.strings[appNameValueIndex] = encodeString(newAppName, pool.utf8)
-        if (nameRawValueIndex >= 0 && nameRawValueIndex != appNameValueIndex) {
+        if (tag.nameRawValueIndex >= 0 && tag.nameRawValueIndex != appNameValueIndex) {
             // rawValue 与 typed value 指向不同字符串时，同步替换，避免 aapt/回显显示旧值
-            pool.strings[nameRawValueIndex] = encodeString(newAppName, pool.utf8)
+            pool.strings[tag.nameRawValueIndex] = encodeString(newAppName, pool.utf8)
         }
-        if (factoryValueIndex >= 0) {
+        if (tag.factoryValueIndex >= 0) {
             // appComponentFactory 指向的类（如 androidx CoreComponentFactory）已随原 dex 被抽走，
             // 框架创建 ClassLoader 时（早于 attachBaseContext）就要实例化它，必须换成框架自带实现
-            pool.strings[factoryValueIndex] = encodeString(DEFAULT_COMPONENT_FACTORY, pool.utf8)
+            pool.strings[tag.factoryValueIndex] = encodeString(DEFAULT_COMPONENT_FACTORY, pool.utf8)
         }
         val newPool = serializeStringPool(pool)
 
-        // 3. 拼接新文件：文件头 + 新池 + 池之后的原始字节
+        // 4. 拼接新文件：文件头 + 新池 + 池之后的原始字节（必要时在 application 标签末尾插入 name 属性）
         val poolEnd = pool.chunkStart + pool.chunkSize
         val tail = axml.copyOfRange(poolEnd, fileSize)
+        val newTail: ByteArray = if (insertNameAttr != null) {
+            insertNameAttribute(tail, tag, poolEnd, insertNameAttr)
+        } else {
+            tail
+        }
         val head = axml.copyOfRange(0, pool.chunkStart)
-        val out = ByteBuffer.allocate(head.size + newPool.size + tail.size).order(ByteOrder.LITTLE_ENDIAN)
+        val out = ByteBuffer.allocate(head.size + newPool.size + newTail.size).order(ByteOrder.LITTLE_ENDIAN)
         out.put(head)
         out.put(newPool)
-        out.put(tail)
+        out.put(newTail)
         val result = out.array()
         // 修正文件总大小
         ByteBuffer.wrap(result).order(ByteOrder.LITTLE_ENDIAN).putInt(4, result.size)
         return result to oldAppName
+    }
+
+    private fun poolIndexOf(pool: StringPool, s: String): Int? {
+        val charset = if (pool.utf8) Charsets.UTF_8 else Charset.forName("UTF-16LE")
+        for (i in pool.strings.indices) {
+            if (String(pool.strings[i], charset) == s) return i
+        }
+        return null
+    }
+
+    private fun poolAppend(pool: StringPool, s: String): Int {
+        pool.strings.add(encodeString(s, pool.utf8))
+        return pool.strings.size - 1
+    }
+
+    /**
+     * 在 <application> start-tag chunk 末尾追加一个 android:name 属性（20 字节）。
+     * tail 为字符串池之后的原始字节；返回插入后的新 tail。
+     */
+    private fun insertNameAttribute(
+        tail: ByteArray,
+        tag: AppTag,
+        poolEnd: Int,
+        attrRefs: IntArray
+    ): ByteArray {
+        val nsIdx = attrRefs[0]
+        val nameStrIdx = attrRefs[1]
+        val appNameIdx = attrRefs[2]
+
+        // attribute: ResXMLTree_attribute { ns u32, name u32, rawValue u32, Res_value(8B) }
+        val attr = ByteBuffer.allocate(20).order(ByteOrder.LITTLE_ENDIAN)
+            .putInt(nsIdx)
+            .putInt(nameStrIdx)
+            .putInt(appNameIdx)
+            .putShort(8)          // Res_value.size
+            .put(0)               // Res_value.res0
+            .put(TYPE_STRING.toByte())
+            .putInt(appNameIdx)   // Res_value.data = 字符串池下标
+            .array()
+
+        // start-tag chunk 在 tail 内的相对位置
+        val chunkRel = tag.chunkStart - poolEnd
+        // 属性区结尾（相对 tail）：chunk 内 attrOff 相对 chunkStart，即 chunkRel + attrStart + headerSize
+        val insertRel = chunkRel + tag.headerSize + tag.attrStart + tag.attrCount * tag.attrSize
+
+        val out = ByteBuffer.allocate(tail.size + 20).order(ByteOrder.LITTLE_ENDIAN)
+        out.put(tail, 0, insertRel)
+        out.put(attr)
+        out.put(tail, insertRel, tail.size - insertRel)
+        val newTail = out.array()
+
+        // 更新 start-tag chunk：attributeCount(+1) 与 chunk size(+20)
+        val bb = ByteBuffer.wrap(newTail).order(ByteOrder.LITTLE_ENDIAN)
+        val attrCountOffset = chunkRel + tag.headerSize + 12 // attrCount 位于 body+12
+        bb.putShort(attrCountOffset, (tag.attrCount + 1).toShort())
+        bb.putInt(chunkRel + 4, bb.getInt(chunkRel + 4) + 20)
+        return newTail
     }
 
     // ---------- 解析 ----------
@@ -172,8 +238,8 @@ object AxmlEditor {
     }
 
     /**
-     * 扫描 start-tag chunk：若是 <application> 标签，返回
-     * AppTag(android:name 值池下标, 原值, android:name 的 rawValue 池下标[无则-1], appComponentFactory 值池下标[无则-1])。
+     * 扫描 start-tag chunk：若是 <application> 标签则返回其完整布局信息。
+     * nameValueIndex 为 -1 表示标签没有 android:name（默认 android.app.Application）。
      */
     private fun scanApplicationTag(
         buf: ByteBuffer,
@@ -182,12 +248,13 @@ object AxmlEditor {
         pool: StringPool
     ): AppTag? {
         // start-tag: header(type,headerSize,size) lineNumber comment ns name attrStart attrSize attrCount idIndex classIndex styleIndex
-        val nameIdx = buf.getInt(chunkStart + 20)
-        if (poolString(pool, nameIdx) != "application") return null
+        val tagNameIdx = buf.getInt(chunkStart + 20)
+        if (poolString(pool, tagNameIdx) != "application") return null
         val attrCount = buf.shortAt(chunkStart + 28).toInt() and 0xFFFF
         // attrStart 是相对 tag body（ns 字段）起始的偏移
-        val attrOff = chunkStart + headerSize + (buf.shortAt(chunkStart + 24).toInt() and 0xFFFF)
+        val attrStart = buf.shortAt(chunkStart + 24).toInt() and 0xFFFF
         val attrSize = buf.shortAt(chunkStart + 26).toInt() and 0xFFFF
+        val attrOff = chunkStart + headerSize + attrStart
         var nameIndex = -1
         var nameRawValueIndex = -1
         var oldName: String? = null
@@ -213,13 +280,27 @@ object AxmlEditor {
                 "appComponentFactory" -> factoryIndex = data
             }
         }
-        if (nameIndex < 0 || oldName == null) return null
-        return AppTag(nameIndex, oldName, nameRawValueIndex, factoryIndex)
+        return AppTag(
+            chunkStart = chunkStart,
+            headerSize = headerSize,
+            attrStart = attrStart,
+            attrSize = attrSize,
+            attrCount = attrCount,
+            nameValueIndex = nameIndex,
+            oldName = oldName,
+            nameRawValueIndex = nameRawValueIndex,
+            factoryValueIndex = factoryIndex
+        )
     }
 
     private data class AppTag(
-        val nameValueIndex: Int,
-        val oldName: String,
+        val chunkStart: Int,       // start-tag chunk 起始（含 chunk header）
+        val headerSize: Int,
+        val attrStart: Int,        // 第一个 attribute 相对 body 起始的偏移
+        val attrSize: Int,
+        val attrCount: Int,
+        val nameValueIndex: Int,   // -1 = 无 android:name
+        val oldName: String?,
         val nameRawValueIndex: Int,
         val factoryValueIndex: Int
     )
