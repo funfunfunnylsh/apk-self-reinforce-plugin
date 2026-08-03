@@ -50,8 +50,10 @@ afterEvaluate {
         publications {
             create<MavenPublication>("apkSelfReinforcePlugin") {
                 from(components["java"])
+                // 与仓库名一致：JitPack 会重写 group 为 com.github.funfunfunnylsh，
+                // 用户坐标：com.github.funfunfunnylsh:apk-self-reinforce-plugin:v1.0.0
                 groupId = "com.cdtec.plugin"
-                artifactId = "apk-self-reinforce"
+                artifactId = "apk-self-reinforce-plugin"
                 version = "1.0.0"
                 artifact(tasks["sourceJar"])
             }
