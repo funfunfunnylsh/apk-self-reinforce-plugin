@@ -1,0 +1,47 @@
+package com.cdtec.selfreinforce.core
+
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+/**
+ * AxmlEditor 回归测试：用真实的二进制 AndroidManifest.xml 样本（取自 barmakMap release 包）
+ * 验证入口替换 + 幂等性，防止 AXML 解析/字符串池重建回归。
+ */
+class AxmlEditorTest {
+
+    private fun sampleManifest(): ByteArray =
+        javaClass.classLoader.getResourceAsStream("sample_AndroidManifest.xml")!!.readBytes()
+
+    @Test
+    fun `替换application入口并返回原值`() {
+        val (patched, oldName) = AxmlEditor.replaceApplicationName(sampleManifest(), "com.selfprotect.StubApplication")
+        assertEquals("com.barmark.navmap.FastApp", oldName)
+        assertTrue("输出应大于输入", patched.size >= 80_000)
+        // 幂等：二次替换能再次解析并返回第一次替换的结果
+        val (patched2, oldName2) = AxmlEditor.replaceApplicationName(patched, "com.selfprotect.StubApplication")
+        assertEquals("com.selfprotect.StubApplication", oldName2)
+        assertEquals(patched.size, patched2.size)
+    }
+
+    @Test
+    fun `AppComponentFactory被替换为框架默认`() {
+        val (patched, _) = AxmlEditor.replaceApplicationName(sampleManifest(), "com.selfprotect.StubApplication")
+        // 字符串池为 UTF-8 或 UTF-16LE 编码，按两种编码的字节序列搜索
+        val target = "android.app.AppComponentFactory"
+        val inUtf8 = patched.containsSequence(target.toByteArray(Charsets.UTF_8))
+        val inUtf16 = patched.containsSequence(target.toByteArray(Charsets.UTF_16LE))
+        assertTrue("应包含 android.app.AppComponentFactory", inUtf8 || inUtf16)
+    }
+
+    private fun ByteArray.containsSequence(seq: ByteArray): Boolean {
+        if (seq.isEmpty() || seq.size > size) return false
+        outer@ for (i in 0..size - seq.size) {
+            for (j in seq.indices) {
+                if (this[i + j] != seq[j]) continue@outer
+            }
+            return true
+        }
+        return false
+    }
+}

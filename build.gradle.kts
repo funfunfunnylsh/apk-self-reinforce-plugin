@@ -17,6 +17,7 @@ kotlin {
 
 dependencies {
     implementation("org.jetbrains.kotlin:kotlin-stdlib:1.9.0")
+    testImplementation("junit:junit:4.13.2")
 }
 
 // 自研 APK 加固插件：DEX 加密 + 壳 Application + Manifest 二进制改写 + 重签名

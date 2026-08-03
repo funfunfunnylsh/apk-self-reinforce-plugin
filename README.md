@@ -57,7 +57,7 @@ DEX 整体加密 · 壳 Application 入口替换 · 防重打包 · 反调试/�
 ### 方式一：命令行（不接入工程，直接加固）
 
 ```bash
-git clone https://github.com/<your-name>/apk-self-reinforce-plugin.git
+git clone https://github.com/funfunfunnylsh/apk-self-reinforce-plugin.git
 cd apk-self-reinforce-plugin
 
 sh gradlew :selfReinforceCli \
