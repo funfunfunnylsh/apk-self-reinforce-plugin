@@ -104,6 +104,40 @@ selfReinforce {
 
 执行 `./gradlew selfReinforceApk`。
 
+### 方式三：远程直接引用（JitPack，无需 clone 仓库）
+
+插件已发布到 [JitPack](https://jitpack.io/#funfunfunnylsh/apk-self-reinforce-plugin)，可直接从远程拉取：
+
+```kotlin
+// settings.gradle.kts（或根 build.gradle.kts 顶部）
+buildscript {
+    repositories {
+        google()
+        mavenCentral()
+        maven { url = uri("https://jitpack.io") }
+    }
+    dependencies {
+        classpath("com.github.funfunfunnylsh:apk-self-reinforce-plugin:v1.0.0")
+    }
+}
+
+// app/build.gradle.kts
+apply(plugin = "com.cdtec.plugin.apk-self-reinforce")
+```
+
+Groovy 写法：
+
+```groovy
+// 根 build.gradle
+buildscript {
+    repositories { maven { url 'https://jitpack.io' } }
+    dependencies { classpath 'com.github.funfunfunnylsh:apk-self-reinforce-plugin:v1.0.0' }
+}
+apply plugin: 'com.cdtec.plugin.apk-self-reinforce'
+```
+
+然后同样配置 `selfReinforce { ... }` 扩展即可。版本号对应 GitHub tag（当前 `v1.0.0`）。
+
 ### assets 资源加密的业务接入
 
 ```java
