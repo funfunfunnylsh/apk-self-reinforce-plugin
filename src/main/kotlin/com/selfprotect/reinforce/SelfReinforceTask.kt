@@ -1,5 +1,6 @@
 package com.selfprotect.reinforce
 
+import com.selfprotect.reinforce.core.PgyerUploader
 import com.selfprotect.reinforce.core.ReinforcePipeline
 import com.selfprotect.reinforce.core.Signer
 import org.gradle.api.DefaultTask
@@ -7,6 +8,17 @@ import org.gradle.api.tasks.Internal
 import org.gradle.api.tasks.TaskAction
 import java.io.File
 
+/**
+ * 加固任务。所有配置支持三种来源，优先级：命令行 -P 属性 > selfReinforce 扩展 > 默认值。
+ *
+ * 命令行示例（一条命令完成 打包+加固+重签+多渠道+蒲公英+钉钉）：
+ * ./gradlew :app:selfReinforceApk \
+ *   -PinputApk=app.apk -PoutputApk=out.apk \
+ *   -Pks=ks.jks -PksPass=x -Palias=x -PkeyPass=x \
+ *   -Pchannels=oppo,xiaomi -PchannelsFile=channels.txt \
+ *   -PpgyerApiKey=xxx -PpgyerInstallPassword=123 \
+ *   -PdingTalkWebhook=https://oapi.dingtalk.com/robot/send?access_token=xxx -PdingTalkSecret=SECxxx
+ */
 abstract class SelfReinforceTask : DefaultTask() {
 
     @get:Internal
@@ -15,59 +27,88 @@ abstract class SelfReinforceTask : DefaultTask() {
     @get:Internal
     var projDir: File? = null
 
+    /** 读取命令行 -P 属性（空/空白视为未提供） */
+    private fun prop(key: String): String? =
+        (project.findProperty(key) as? String)?.takeIf { it.isNotBlank() }
+
+    private fun propBool(key: String): Boolean? =
+        prop(key)?.toBooleanStrictOrNull()
+
     @TaskAction
     fun run() {
         val ext = selfExt ?: throw IllegalStateException("selfReinforce 扩展未配置")
 
-        // ===== 1. 输入 APK（默认：release 产物目录最新 APK）=====
-        val input = if (ext.inputApk.isPresent) {
-            ext.inputApk.get().asFile
-        } else {
-            val dir = File(project.buildDir, "outputs/apk/release")
-            val apks = dir.listFiles { f -> f.isFile && f.name.endsWith(".apk") && !f.name.contains("selfprotect") }
-            apks?.maxByOrNull { it.lastModified() }
-                ?: throw IllegalStateException(
-                    "未找到 release APK（$dir）。\n" +
-                    "提示：直接运行 ./gradlew :app:selfReinforceApk 会自动先执行 assembleRelease 再加固；\n" +
-                    "或显式配置 selfReinforce.inputApk 指定要加固的 APK。"
-                )
-        }
+        // ===== 1. 输入 APK：-PinputApk > ext.inputApk > release 产物目录最新 APK =====
+        val input = prop("inputApk")?.let(::File)
+            ?: ext.inputApk.orNull?.asFile
+            ?: run {
+                val dir = File(project.buildDir, "outputs/apk/release")
+                val apks = dir.listFiles { f -> f.isFile && f.name.endsWith(".apk") && !f.name.contains("selfprotect") }
+                apks?.maxByOrNull { it.lastModified() }
+                    ?: throw IllegalStateException(
+                        "未找到 release APK（$dir）。\n" +
+                        "提示：直接运行 ./gradlew :app:selfReinforceApk 会自动先执行 assembleRelease 再加固；\n" +
+                        "或 -PinputApk=... 指定要加固的 APK。"
+                    )
+            }
         require(input.exists()) { "输入 APK 不存在：$input" }
 
-        // ===== 2. 输出 APK（默认：输入同目录 app-selfprotect.apk）=====
-        val output = ext.outputApk.orNull?.asFile
+        // ===== 2. 输出 APK：-PoutputApk > ext.outputApk > 输入同目录 app-selfprotect.apk =====
+        val output = prop("outputApk")?.let(::File)
+            ?: ext.outputApk.orNull?.asFile
             ?: File(input.parentFile, "app-selfprotect.apk")
 
-        // ===== 3. SDK =====
-        val sdk = ext.sdkDir.orNull?.let { File(it) } ?: ReinforcePipeline.detectSdkDir(projDir)
+        // ===== 3. SDK：-PsdkDir > ext.sdkDir > 自动探测 =====
+        val sdk = prop("sdkDir")?.let(::File)
+            ?: ext.sdkDir.orNull?.let(::File)
+            ?: ReinforcePipeline.detectSdkDir(projDir)
 
-        // ===== 4. 签名解析：显式配置 > android signingConfigs(release) > debug keystore =====
+        // ===== 4. 签名：-Pks > ext 显式 > android signingConfigs(release) > debug keystore =====
         val signing = resolveSigning(project, ext)
 
-        // ===== 5. 加固流水线（含多渠道 / 蒲公英 / 钉钉）=====
-        val pgyerConfig = ext.pgyerApiKey.orNull?.takeIf { it.isNotBlank() }?.let {
-            com.selfprotect.reinforce.core.PgyerUploader.Config(
+        // ===== 5. 多渠道/加密等配置合并（命令行 + 扩展）=====
+        val cliChannels = prop("channels")?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() } ?: emptyList()
+        val channels = (ext.channels + cliChannels).distinct()
+
+        val cliEncAssets = prop("encryptedAssets")?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() } ?: emptyList()
+        val encryptedAssets = (ext.encryptedAssets + cliEncAssets).distinct()
+
+        val channelFile = prop("channelsFile")?.let(::File) ?: ext.channelFile.orNull?.asFile
+        val channelOutputDir = prop("channelOutputDir")?.let(::File) ?: ext.channelOutputDir.orNull?.asFile
+
+        // ===== 6. 蒲公英（可选）：-PpgyerApiKey > ext 配置 =====
+        val pgyerKey = prop("pgyerApiKey") ?: ext.pgyerApiKey.orNull?.takeIf { it.isNotBlank() }
+        val pgyerConfig = pgyerKey?.let {
+            PgyerUploader.Config(
                 apiKey = it,
-                installType = ext.pgyerInstallType.orNull?.takeIf(String::isNotBlank) ?: "2",
-                installPassword = ext.pgyerInstallPassword.orNull ?: "",
-                updateDescription = ext.pgyerUpdateDescription.orNull ?: ""
+                installType = prop("pgyerInstallType") ?: ext.pgyerInstallType.orNull?.takeIf(String::isNotBlank) ?: "2",
+                installPassword = prop("pgyerInstallPassword") ?: ext.pgyerInstallPassword.orNull ?: "",
+                updateDescription = prop("pgyerUpdateDescription") ?: ext.pgyerUpdateDescription.orNull ?: ""
             )
         }
+        val pgyerUploadAll = propBool("pgyerUploadAllChannels") ?: ext.pgyerUploadAllChannels.getOrElse(false)
+
+        // ===== 7. 钉钉（可选）：-PdingTalkWebhook > ext 配置 =====
+        val dingTalkWebhook = prop("dingTalkWebhook") ?: ext.dingTalkWebhook.orNull?.takeIf { it.isNotBlank() }
+        val dingTalkSecret = prop("dingTalkSecret") ?: ext.dingTalkSecret.orNull?.takeIf { it.isNotBlank() }
+        val dingTalkKeyword = prop("dingTalkKeyword") ?: ext.dingTalkKeyword.orNull?.takeIf { it.isNotBlank() } ?: "Android"
+
+        // ===== 8. 加固流水线 =====
         ReinforcePipeline.run(
             ReinforcePipeline.Config(
                 inputApk = input,
                 outputApk = output,
                 sdkDir = sdk,
                 signing = signing,
-                encryptedAssets = ext.encryptedAssets.toList(),
-                channels = ext.channels.toList(),
-                channelFile = ext.channelFile.orNull?.asFile,
-                channelOutputDir = ext.channelOutputDir.orNull?.asFile,
+                encryptedAssets = encryptedAssets,
+                channels = channels,
+                channelFile = channelFile,
+                channelOutputDir = channelOutputDir,
                 pgyer = pgyerConfig,
-                pgyerUploadAllChannels = ext.pgyerUploadAllChannels.getOrElse(false),
-                dingTalkWebhook = ext.dingTalkWebhook.orNull?.takeIf { it.isNotBlank() },
-                dingTalkSecret = ext.dingTalkSecret.orNull?.takeIf { it.isNotBlank() },
-                dingTalkKeyword = ext.dingTalkKeyword.orNull?.takeIf { it.isNotBlank() } ?: "Android",
+                pgyerUploadAllChannels = pgyerUploadAll,
+                dingTalkWebhook = dingTalkWebhook,
+                dingTalkSecret = dingTalkSecret,
+                dingTalkKeyword = dingTalkKeyword,
                 workDir = File(project.buildDir, "self-reinforce")
             )
         ) { logger.lifecycle(it) }
@@ -75,12 +116,23 @@ abstract class SelfReinforceTask : DefaultTask() {
 
     /**
      * 签名解析，优先级：
-     *  1. 显式配置（storeFile 等 4 项）
-     *  2. android extension 的 release signingConfig
-     *  3. ~/.android/debug.keystore（androiddebugkey / android）
+     *  1. 命令行 -Pks（配套 -PksPass/-Palias/-PkeyPass）
+     *  2. 扩展显式配置（storeFile 等 4 项）
+     *  3. android extension 的 release signingConfig
+     *  4. ~/.android/debug.keystore（androiddebugkey / android）
      */
     private fun resolveSigning(project: org.gradle.api.Project, ext: SelfReinforceExtension): Signer.SigningConfig? {
-        // 1) 显式配置
+        // 1) 命令行 -Pks
+        val cliKs = prop("ks")
+        if (cliKs != null) {
+            return Signer.SigningConfig(
+                storeFile = File(cliKs),
+                storePassword = prop("ksPass") ?: throw IllegalStateException("-Pks 时必须同时提供 -PksPass"),
+                keyAlias = prop("alias") ?: throw IllegalStateException("-Pks 时必须同时提供 -Palias"),
+                keyPassword = prop("keyPass") ?: throw IllegalStateException("-Pks 时必须同时提供 -PkeyPass")
+            )
+        }
+        // 2) 扩展显式配置
         if (ext.storeFile.isPresent) {
             return Signer.SigningConfig(
                 storeFile = ext.storeFile.get().asFile,
@@ -89,7 +141,7 @@ abstract class SelfReinforceTask : DefaultTask() {
                 keyPassword = ext.keyPassword.orNull ?: throw IllegalStateException("配置了 storeFile 时必须配置 keyPassword")
             )
         }
-        // 2) android signingConfigs(release)
+        // 3) android signingConfigs(release)
         try {
             val androidExt = project.extensions.findByName("android")
             if (androidExt is com.android.build.api.dsl.ApplicationExtension) {
@@ -108,7 +160,7 @@ abstract class SelfReinforceTask : DefaultTask() {
         } catch (t: Throwable) {
             logger.warn("[self-reinforce] 读取 signingConfigs 失败：${t.message}")
         }
-        // 3) debug keystore
+        // 4) debug keystore
         val debug = File(System.getProperty("user.home"), ".android/debug.keystore")
         if (debug.exists()) {
             logger.lifecycle("[self-reinforce] 使用默认 Android debug 签名：$debug")

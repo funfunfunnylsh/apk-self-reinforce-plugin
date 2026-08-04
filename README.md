@@ -151,6 +151,29 @@ selfReinforce {
 
 也会在打包完成后自动追加加固。
 
+#### 命令行参数（-P，优先级高于扩展配置，免改 build.gradle.kts）
+
+```bash
+./gradlew :app:selfReinforceApk \
+  -PinputApk=app-release.apk -PoutputApk=out.apk \
+  -Pks=keystore.jks -PksPass=xxx -Palias=xxx -PkeyPass=xxx \
+  -PencryptedAssets=private/,config.bin \
+  -Pchannels=oppo,xiaomi,huawei -PchannelsFile=channels.txt -PchannelOutputDir=out/channels \
+  -PpgyerApiKey=xxx -PpgyerInstallType=2 -PpgyerInstallPassword=123456 -PpgyerUpdateDescription=自研加固 \
+  -PpgyerUploadAllChannels=true \
+  -PdingTalkWebhook=https://oapi.dingtalk.com/robot/send?access_token=xxx \
+  -PdingTalkSecret=SECxxx -PdingTalkKeyword=DemoApp
+```
+
+| 参数 | 说明 |
+|---|---|
+| `inputApk` / `outputApk` | 输入/输出 APK（默认自动取 release 最新） |
+| `ks/ksPass/alias/keyPass` | 重签名 keystore（不传则用 signingConfigs 或 debug 签名） |
+| `encryptedAssets` | assets 加密规则（逗号分隔） |
+| `channels` / `channelsFile` / `channelOutputDir` | 多渠道（与扩展配置合并去重） |
+| `pgyerApiKey` 等 `pgyer*` | 蒲公英上传（配置 key 即启用） |
+| `dingTalkWebhook` 等 `dingTalk*` | 钉钉群通知（配置 webhook 即启用） |
+
 ### 方式三：远程直接引用（JitPack，无需 clone 仓库）
 
 插件已发布到 [JitPack](https://jitpack.io/#funfunfunnylsh/apk-self-reinforce-plugin)，可直接从远程拉取：
