@@ -65,8 +65,8 @@ class ChannelReaderTest {
         val apkFile = File.createTempFile("channel_test", ".apk").apply { writeBytes(apk) }
         val workDir = File.createTempFile("channel_work", "").apply { delete(); mkdirs() }
 
-        // 1. 从插件资源取出 ChannelReader.java
-        val src = javaClass.getResourceAsStream("/channel/ChannelReader.java")!!
+        // 1. 从插件资源取出 ChannelReader.java（与插件相同的 ClassLoader 读取方式）
+        val src = ChannelReaderTest::class.java.classLoader.getResourceAsStream("channel/ChannelReader.java")!!
         val srcFile = File(workDir, "ChannelReader.java")
         src.use { srcFile.writeBytes(it.readBytes()) }
 
@@ -107,7 +107,7 @@ class ChannelReaderTest {
 
         val apkFile = File.createTempFile("channel_test", ".apk").apply { writeBytes(fakeApk()) }
         val workDir = File.createTempFile("channel_work", "").apply { delete(); mkdirs() }
-        val src = javaClass.getResourceAsStream("/channel/ChannelReader.java")!!
+        val src = ChannelReaderTest::class.java.classLoader.getResourceAsStream("channel/ChannelReader.java")!!
         val srcFile = File(workDir, "ChannelReader.java")
         src.use { srcFile.writeBytes(it.readBytes()) }
         val classesDir = File(workDir, "classes").apply { mkdirs() }

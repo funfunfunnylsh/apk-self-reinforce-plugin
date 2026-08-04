@@ -118,7 +118,9 @@ class SelfReinforcePlugin : Plugin<Project> {
             description = "生成 ChannelReader.java（运行时读取多渠道信息）"
             outputs.dir(outDir)
             doLast {
-                val src = javaClass.getResourceAsStream("/channel/ChannelReader.java")
+                // 与 ShellDexBuilder 一致的读取方式：插件类的 ClassLoader + 无前导斜杠
+                val src = SelfReinforcePlugin::class.java.classLoader
+                    .getResourceAsStream("channel/ChannelReader.java")
                     ?: throw IllegalStateException("插件资源缺少 channel/ChannelReader.java")
                 val target = File(outDir.get().asFile, "com/selfprotect/reinforce/ChannelReader.java")
                 target.parentFile.mkdirs()
