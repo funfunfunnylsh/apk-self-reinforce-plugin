@@ -27,6 +27,7 @@ object ApkReinforcer {
     const val SIGNATURE_PATH = "assets/selfprotect/expected_sig.txt"
     const val PAYLOAD_HASH_PATH = "assets/selfprotect/payload_hash.txt"
     const val ASSETS_MAP_PATH = "assets/selfprotect/assets_map.txt"
+    const val METHODS_PATH = "assets/selfprotect/methods.dat"
     const val ENC_ASSETS_PREFIX = "assets/enc/"
 
     /** 签名指纹掩码（与壳 StubApplication.SIG_MASK 同步；指纹 hex 转字节后逐字节异或） */
@@ -52,6 +53,9 @@ object ApkReinforcer {
 
     class ReinforceException(msg: String) : RuntimeException(msg)
 
+    /** 加固结果：原 Application 名 + 被抽取的方法数（0 = 未启用方法抽取） */
+    data class ReinforceResult(val realAppName: String, val extractedMethodCount: Int)
+
     /**
      * @param inputApk  原始（已签名或未签名）APK
      * @param outputApk 输出未签名加固 APK
@@ -60,7 +64,8 @@ object ApkReinforcer {
      * @param encryptedAssets 需要加密的 assets 路径规则（前缀/精确匹配），如 "private/"、"config.bin"；
      *                        为空表示不加密任何 assets
      * @param nativeLibs Map<abi, so 文件>（如 arm64-v8a -> libselfprotect.so），注入 APK 的 lib/<abi>/ 下
-     * @return 原 Application 全限定名
+     * @param extractedMethods 关键方法抽取规则（如 "Lcom/foo/LicenseManager;"、"com.foo.pay.*"），
+     *                         命中方法的 code_item 被抽空加密进 methods.dat，运行时壳内存回填
      */
     fun reinforce(
         inputApk: File,
@@ -68,8 +73,9 @@ object ApkReinforcer {
         shellDex: ByteArray,
         expectedSignatureHex: String? = null,
         encryptedAssets: List<String> = emptyList(),
-        nativeLibs: Map<String, File> = emptyMap()
-    ): String {
+        nativeLibs: Map<String, File> = emptyMap(),
+        extractedMethods: List<String> = emptyList()
+    ): ReinforceResult {
         require(inputApk.exists()) { "输入 APK 不存在：$inputApk" }
 
         ZipFile(inputApk).use { zip ->
@@ -98,7 +104,10 @@ object ApkReinforcer {
                 ?: throw ReinforceException("Manifest 未声明自定义 Application")
 
             // 3. 构建加密载荷：原始 dex 打包成 zip 后 AES 加密
-            val payloadZip = buildPayloadZip(zip, dexEntries.map { it.name })
+            //    若配置了方法抽取规则：先抽空命中方法的 code_item（原字节单独加密进 methods.dat），
+            //    载荷内 dex 只留桩，运行时壳内存回填（静态反编译看不到真实方法体）
+            val extractedRecords = mutableListOf<DexMethodExtractor.ExtractedMethod>()
+            val payloadZip = buildPayloadZip(zip, dexEntries.map { it.name }, extractedMethods, extractedRecords)
             val payloadEnc = PayloadCrypto.encrypt(payloadZip)
             // 自校验：确保壳运行时能解出来
             if (!PayloadCrypto.decrypt(payloadEnc).contentEquals(payloadZip)) {
@@ -119,7 +128,7 @@ object ApkReinforcer {
                 // 4.2 复制其余条目（跳过原 dex、旧签名文件、将被替换的 Manifest、被加密的 assets）
                 val skip = dexEntries.map { it.name }.toSet() +
                         assetsToEncrypt.toSet() +
-                        setOf("AndroidManifest.xml", PAYLOAD_PATH, CONFIG_PATH, SIGNATURE_PATH, PAYLOAD_HASH_PATH, ASSETS_MAP_PATH)
+                        setOf("AndroidManifest.xml", PAYLOAD_PATH, CONFIG_PATH, SIGNATURE_PATH, PAYLOAD_HASH_PATH, ASSETS_MAP_PATH, METHODS_PATH)
                 zip.entries().asSequence().forEach { entry ->
                     val name = entry.name
                     if (entry.isDirectory || name in skip) return@forEach
@@ -153,13 +162,21 @@ object ApkReinforcer {
                 if (assetsMapLines.isNotEmpty()) {
                     writeEntry(out, ASSETS_MAP_PATH, assetsMapLines.joinToString("\n").toByteArray(Charsets.UTF_8), ZipEntry.DEFLATED)
                 }
+                // 抽取的方法体（与 payload 同密钥 AES 加密；壳侧解密后按 codeOff 内存回填）
+                if (extractedRecords.isNotEmpty()) {
+                    val methodsEnc = PayloadCrypto.encrypt(DexMethodExtractor.serialize(extractedRecords))
+                    if (!PayloadCrypto.decrypt(methodsEnc).contentEquals(DexMethodExtractor.serialize(extractedRecords))) {
+                        throw ReinforceException("methods.dat 加解密自校验失败")
+                    }
+                    writeEntry(out, METHODS_PATH, methodsEnc, ZipEntry.DEFLATED)
+                }
 
                 // 4.6 注入壳 native 库 lib/<abi>/libselfprotect.so（STORE：so 需 16KB 页对齐，不压缩）
                 nativeLibs.forEach { (abi, soFile) ->
                     writeEntry(out, "lib/$abi/libselfprotect.so", soFile.readBytes(), ZipEntry.STORED)
                 }
             }
-            return appName
+            return ReinforceResult(appName, extractedRecords.size)
         }
     }
 
@@ -179,16 +196,30 @@ object ApkReinforcer {
     private fun sha256(data: ByteArray): ByteArray =
         java.security.MessageDigest.getInstance("SHA-256").digest(data)
 
-    /** 把原始 dex 按 classes.dex/classes2.dex... 顺序打入一个内存 zip */
-    private fun buildPayloadZip(zip: ZipFile, dexNames: List<String>): ByteArray {
+    /**
+     * 把原始 dex 按 classes.dex/classes2.dex... 顺序打入一个内存 zip。
+     * extractRules 非空时，命中方法的 code_item 被抽空回填桩，原始字节收进 extractedOut。
+     */
+    private fun buildPayloadZip(
+        zip: ZipFile,
+        dexNames: List<String>,
+        extractRules: List<String>,
+        extractedOut: MutableList<DexMethodExtractor.ExtractedMethod>
+    ): ByteArray {
         val bos = ByteArrayOutputStream()
         ZipOutputStream(bos).use { out ->
             dexNames.forEach { name ->
                 val entry = zip.getEntry(name)
+                var dexBytes = zip.getInputStream(entry).readBytes()
+                if (extractRules.isNotEmpty()) {
+                    val result = DexMethodExtractor.extract(dexBytes, dexIndex(name), extractRules)
+                    dexBytes = result.dex
+                    extractedOut += result.methods
+                }
                 val e = ZipEntry(name)
                 e.method = ZipEntry.DEFLATED
                 out.putNextEntry(e)
-                zip.getInputStream(entry).copyTo(out)
+                out.write(dexBytes)
                 out.closeEntry()
             }
         }

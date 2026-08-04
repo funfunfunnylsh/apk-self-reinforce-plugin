@@ -42,7 +42,7 @@ tasks.register<JavaExec>("selfReinforceCli") {
     classpath = sourceSets["main"].runtimeClasspath
     val props = listOf(
         "inputApk", "outputApk", "sdkDir", "ks", "ksPass", "alias", "keyPass",
-        "encryptedAssets", "channels", "channelsFile", "channelOutputDir",
+        "encryptedAssets", "extractMethods", "channels", "channelsFile", "channelOutputDir",
         "pgyerApiKey", "pgyerInstallType", "pgyerInstallPassword", "pgyerUpdateDescription", "pgyerUploadAllChannels",
         "dingTalkWebhook", "dingTalkSecret", "dingTalkKeyword"
     ).mapNotNull { k -> project.findProperty(k)?.let { "$k=$it" } }

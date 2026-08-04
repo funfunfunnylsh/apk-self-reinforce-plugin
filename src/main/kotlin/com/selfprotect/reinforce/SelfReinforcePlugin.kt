@@ -45,6 +45,15 @@ abstract class SelfReinforceExtension(project: Project) {
     /** 需要加密的 assets 路径规则（前缀/精确匹配，如 "private/"、"config.bin"），空则不加密 */
     val encryptedAssets: MutableList<String> = mutableListOf()
 
+    /**
+     * 关键方法抽取规则（二代壳轻量版），命中方法的 code_item 被抽空加密，运行时内存回填：
+     *  - "Lcom/foo/LicenseManager;"   整类全部方法（构造器除外）
+     *  - "com.foo.pay.*"              包前缀（点号或描述符形式均可）
+     *  - "Lcom/foo/Bar;->check"       精确方法
+     *  - "Lcom/foo/Bar;->check*"      方法名前缀
+     */
+    val extractedMethods: MutableList<String> = mutableListOf()
+
     /** 多渠道列表（如 oppo/xiaomi/huawei），空则不产渠道包 */
     val channels: MutableList<String> = mutableListOf()
 

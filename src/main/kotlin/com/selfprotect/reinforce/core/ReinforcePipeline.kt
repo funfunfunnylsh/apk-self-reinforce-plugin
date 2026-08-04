@@ -14,6 +14,7 @@ object ReinforcePipeline {
         val sdkDir: File,
         val signing: Signer.SigningConfig? = null,
         val encryptedAssets: List<String> = emptyList(),
+        val extractedMethods: List<String> = emptyList(),
         val channels: List<String> = emptyList(),
         val channelFile: File? = null,
         val channelOutputDir: File? = null,
@@ -50,17 +51,22 @@ object ReinforcePipeline {
             null
         }
 
-        log("[2/4] 加固 APK（DEX 抽取加密 + Manifest 改写 + 注入壳${if (config.encryptedAssets.isNotEmpty()) " + assets 加密" else ""}）...")
+        log("[2/4] 加固 APK（DEX 抽取加密 + Manifest 改写 + 注入壳${if (config.encryptedAssets.isNotEmpty()) " + assets 加密" else ""}${if (config.extractedMethods.isNotEmpty()) " + 方法抽取" else ""}）...")
         val unsigned = File(config.workDir, "unsigned-reinforced.apk")
-        val realApp = ApkReinforcer.reinforce(
+        val result = ApkReinforcer.reinforce(
             config.inputApk, unsigned, shellDex,
             expectedSignatureHex = expectedSignature,
             encryptedAssets = config.encryptedAssets,
-            nativeLibs = nativeLibs
+            nativeLibs = nativeLibs,
+            extractedMethods = config.extractedMethods
         )
-        log("      原 Application：$realApp（已写入 ${ApkReinforcer.CONFIG_PATH}）")
+        log("      原 Application：${result.realAppName}（已写入 ${ApkReinforcer.CONFIG_PATH}）")
         if (config.encryptedAssets.isNotEmpty()) {
             log("      assets 加密规则：${config.encryptedAssets}")
+        }
+        if (config.extractedMethods.isNotEmpty()) {
+            log("      方法抽取规则：${config.extractedMethods}")
+            log("      已抽空 ${result.extractedMethodCount} 个方法（加密进 ${ApkReinforcer.METHODS_PATH}，运行时内存回填）")
         }
         log("      未签名包：${unsigned.absolutePath}（${unsigned.length() / 1024 / 1024} MB）")
 

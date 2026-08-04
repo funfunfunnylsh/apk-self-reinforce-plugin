@@ -4,7 +4,7 @@
 
 **纯 JVM 实现的 Android APK 自研加固 Gradle 插件 · 不依赖任何第三方加固二进制**
 
-DEX 整体加密 · 壳 Application 入口替换 · 防重打包 · 反调试/反动态注入 · assets 资源加密 · 重签名
+DEX 整体加密 · 壳 Application 入口替换 · 关键方法抽取 · 防重打包 · 反调试/反动态注入 · assets 资源加密 · 重签名
 
 </div>
 
@@ -15,6 +15,7 @@ DEX 整体加密 · 壳 Application 入口替换 · 防重打包 · 反调试/�
 | 能力 | 说明 |
 |---|---|
 | 🔒 **DEX 整体加密** | 原始 `classes*.dex` → AES/CBC 加密为 `assets/selfprotect/payload.dat`，运行时解密加载（多 dex 数字序） |
+| 🩸 **关键方法抽取**（二代壳轻量版） | 按规则把敏感方法的 `code_item` 从 dex 中抽空（原位回填最小合法桩），原字节加密进 `assets/selfprotect/methods.dat`，运行时壳在内存回填 —— 静态反编译只能看到桩，真实字节码不落 APK |
 | 🧬 **native 壳层** | 解密/完整性/安全检测在 `libselfprotect.so`（NDK 编译，双 ABI），密钥编译进 so（混淆存储），Frida hook Java 层拿不到密钥与明文 |
 | 💾 **载荷不落盘** | API 26+ `InMemoryDexClassLoader(ByteBuffer[])` 内存加载；API<26 native `memfd_create` + `/proc/self/fd/N`，全程无明文文件落盘 |
 | 🚫 **native 反调试** | `ptrace(TRACEME)` 自附加 + 后台线程轮询 `TracerPid` + frida/gadget maps 特征 + 27042 端口探测，命中即杀 |
@@ -35,6 +36,7 @@ DEX 整体加密 · 壳 Application 入口替换 · 防重打包 · 反调试/�
 打包侧（Gradle Task / CLI，纯 JVM）
  1. 壳源码 --javac(android.jar)--> class --d8--> 壳 classes.dex
  2. 原始 classes*.dex --zip--> AES 加密 --> assets/selfprotect/payload.dat
+    （可选）命中规则的方法 code_item 抽空回填桩，原字节 AES 加密 --> assets/selfprotect/methods.dat
     AxmlEditor 二进制改写 Manifest：application name → 壳 StubApplication
     原 Application 全限定名 --> assets/selfprotect/config.txt
     签名指纹(SHA-256, XOR 掩码) --> assets/selfprotect/expected_sig.txt
@@ -46,6 +48,7 @@ DEX 整体加密 · 壳 Application 入口替换 · 防重打包 · 反调试/�
  StubApplication.attachBaseContext()
    ├─ 安全校验：反调试 → 反动态注入 → 签名指纹 → payload 哈希，任一命中 killProcess
    ├─ 解密 payload.dat → payload.zip（原 dex）
+   ├─ 解密 methods.dat → 按 (dexIndex, codeOff) 把方法体回填进内存 dex（启用抽取时）
    ├─ DexClassLoader(parent=原 loader) + 替换 LoadedApk.mClassLoader
    └─ 反射实例化原 Application 并 attach
  StubApplication.onCreate()
@@ -83,6 +86,7 @@ sh gradlew :selfReinforceCli \
 | `outputApk` | ✅ | 输出路径 |
 | `ks/ksPass/alias/keyPass` | 可选 | keystore 重签名；不传则输出对齐后的未签名包（不预置防重打包指纹） |
 | `encryptedAssets` | 可选 | 需要加密的 assets 路径（前缀/精确匹配，逗号分隔） |
+| `extractMethods` | 可选 | 关键方法抽取规则（逗号分隔，见「关键方法抽取」节） |
 | `channels` | 可选 | 多渠道列表（逗号分隔），产渠道包（写入 Signing Block，无需重签名） |
 | `channelsFile` | 可选 | 多渠道 txt 文件（每行一个渠道，支持 `#` 注释），与 channels 合并去重 |
 | `channelOutputDir` | 可选 | 渠道包输出目录，默认 outputApk 同目录 `channels/` |
@@ -140,6 +144,9 @@ selfReinforce {
     outputApk.set(layout.buildDirectory.file("outputs/apk/release/app-selfprotect.apk"))
     encryptedAssets.addAll(listOf("private/", "config.bin")) // 可选
 
+    // 关键方法抽取（可选，见「关键方法抽取」节）
+    extractedMethods.addAll(listOf("Lcom/foo/LicenseManager;", "com.foo.pay.*"))
+
     // 打包阶段集成（可选）
     // autoBuildRelease.set(false)          // 关闭自动依赖 assembleRelease
     // hookToAssembleRelease.set(true)      // 开启后跑 assembleRelease 末尾自动加固
@@ -193,6 +200,7 @@ selfReinforce {
 | `inputApk` / `outputApk` | 输入/输出 APK（默认自动取 release 最新） |
 | `ks/ksPass/alias/keyPass` | 重签名 keystore（不传则用 signingConfigs 或 debug 签名） |
 | `encryptedAssets` | assets 加密规则（逗号分隔） |
+| `extractMethods` | 关键方法抽取规则（逗号分隔） |
 | `channels` / `channelsFile` / `channelOutputDir` | 多渠道（与扩展配置合并去重） |
 | `pgyerApiKey` 等 `pgyer*` | 蒲公英上传（配置 key 即启用） |
 | `dingTalkWebhook` 等 `dingTalk*` | 钉钉群通知（配置 webhook 即启用） |
@@ -210,7 +218,7 @@ buildscript {
         maven { url = uri("https://jitpack.io") }
     }
     dependencies {
-        classpath("com.github.funfunfunnylsh:apk-self-reinforce-plugin:v1.0.0")
+        classpath("com.github.funfunfunnylsh:apk-self-reinforce-plugin:v1.3.0")
     }
 }
 
@@ -224,12 +232,40 @@ Groovy 写法：
 // 根 build.gradle
 buildscript {
     repositories { maven { url 'https://jitpack.io' } }
-    dependencies { classpath 'com.github.funfunfunnylsh:apk-self-reinforce-plugin:v1.0.0' }
+    dependencies { classpath 'com.github.funfunfunnylsh:apk-self-reinforce-plugin:v1.3.0' }
 }
 apply plugin: 'com.selfprotect.reinforce'
 ```
 
-然后同样配置 `selfReinforce { ... }` 扩展即可。版本号对应 GitHub tag（当前 `v1.0.0`）。
+然后同样配置 `selfReinforce { ... }` 扩展即可。版本号对应 GitHub tag（当前 `v1.3.0`）。
+
+### 关键方法抽取（二代壳轻量版）
+
+在 DEX 整体加密之上，把**最敏感的方法**（license 校验、密钥派生、支付等）的 `code_item` 从 dex 中抽空，
+原字节单独加密进 `assets/selfprotect/methods.dat`；运行时壳解密后按 `(dexIndex, codeOff)` 把方法体
+回填进**内存中的 dex** 再交给 ClassLoader。静态反编译（jadx 等）只能看到一行桩：
+
+```java
+// 反编译加固包看到的 licenseToken()：
+public static String licenseToken(int i) { return null; }   // 桩
+```
+
+配置规则（`selfReinforce { extractedMethods.add(...) }` 或 `-PextractMethods=a,b`）：
+
+| 规则形式 | 示例 | 含义 |
+|---|---|---|
+| 描述符整类 | `Lcom/foo/LicenseManager;` | 该类全部方法（构造器除外） |
+| 包前缀 | `com.foo.pay.*` 或 `Lcom/foo/pay/*` | 包下所有类的全部方法 |
+| 精确方法 | `Lcom/foo/Bar;->check` | 只抽 `check` 方法 |
+| 方法名前缀 | `Lcom/foo/Bar;->check*` | `check` 开头的方法 |
+
+实现要点与限制：
+
+- **不抽取 `<init>` / `<clinit>`**：构造器必须调用父类构造，桩无法通过 ART 校验（故类初始化逻辑建议放到普通方法中再抽取）
+- abstract / native 方法无 `code_item`，自动跳过；比桩还小的方法（如纯 `return-void`）没有保护价值，自动跳过
+- 桩按返回类型生成：`return-void` / `const/4 + return` / `return-wide` / `return-object`，原指令区域全部清零（静态不可见残留）
+- 抽取后自动重算 dex 的 SHA-1 签名与 adler32 校验和
+- 建议配合包名/类名混淆（R8/ProGuard）使用，让规则目标更隐蔽
 
 ### assets 资源加密的业务接入
 
@@ -265,6 +301,7 @@ apk-self-reinforce-plugin/
 │   └── core/
 │       ├── ReinforcePipeline.kt      # 流水线编排（壳编译→加固→对齐→重签）
 │       ├── ApkReinforcer.kt          # APK 重建：dex 抽取加密/指纹/哈希/assets 加密
+│       ├── DexMethodExtractor.kt     # DEX 解析 + 关键方法抽取（code_item 抽空回填桩）
 │       ├── AxmlEditor.kt             # 二进制 AXML 解析与字符串池重建
 │       ├── PayloadCrypto.kt          # AES 加解密（打包侧）
 │       ├── ShellDexBuilder.kt        # javac + d8 编译壳 dex
@@ -277,7 +314,8 @@ apk-self-reinforce-plugin/
 
 ## 已知限制
 
-- 一代壳 + native 加固层：DEX 整体加密（native 解密、内存加载不落盘），未做方法级 VMP / 抽取。
+- 一代壳 + 方法抽取：DEX 整体加密（native 解密、内存加载不落盘）+ 关键方法 code_item 抽空；**未做方法级 VMP/虚拟化**（接入 nmmvm 或商业 VMP 见 Roadmap）。
+- 抽取的方法运行时会在内存中还原（这是所有抽取壳的共性），对抗内存 dump 需叠加反调试与 VMP。
 - native 层为 C 实现（自写 AES/SHA256，零外部依赖），反调试/环境检测为常见特征库，对抗定制化对抗需持续迭代。
 - 反调试后台线程与反模拟器/root 为**默认开启**，可通过 `ShellNative.init` 的 flags 按需关闭；真机误杀时用 `adb logcat -s SelfProtectNative` 查看命中原因。
 - native 编译依赖本机 NDK（`sdk/ndk` 或 `ANDROID_NDK_HOME`）；缺失时自动跳过 so 注入并降级为 Java 层检测。
@@ -288,7 +326,7 @@ apk-self-reinforce-plugin/
 - [x] 载荷不落盘（API≥26 InMemoryDexClassLoader / API<26 memfd）
 - [x] native 反调试 + 反模拟器/root
 - [x] SO 字符串混淆（volatile XOR，防 clang 常量折叠）
-- [ ] 关键方法轻量抽取（1-N 个敏感方法字节码抽到 native，运行时还原）
+- [x] 关键方法轻量抽取（code_item 抽空 + 加密存储 + 运行时内存回填）
 - [ ] 敏感方法接入 nmmvm 解释器（Apache 2.0）做 dex-vm 试点（详见 DEX/SO VMP 难度调研）
 
 ## License

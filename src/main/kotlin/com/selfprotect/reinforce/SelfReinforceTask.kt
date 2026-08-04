@@ -73,6 +73,10 @@ abstract class SelfReinforceTask : DefaultTask() {
         val cliEncAssets = prop("encryptedAssets")?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() } ?: emptyList()
         val encryptedAssets = (ext.encryptedAssets + cliEncAssets).distinct()
 
+        // 关键方法抽取：-PextractMethods=com.foo.pay.*,Lcom/foo/Bar;->check
+        val cliExtract = prop("extractMethods")?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() } ?: emptyList()
+        val extractedMethods = (ext.extractedMethods + cliExtract).distinct()
+
         val channelFile = prop("channelsFile")?.let(::File) ?: ext.channelFile.orNull?.asFile
         val channelOutputDir = prop("channelOutputDir")?.let(::File) ?: ext.channelOutputDir.orNull?.asFile
 
@@ -101,6 +105,7 @@ abstract class SelfReinforceTask : DefaultTask() {
                 sdkDir = sdk,
                 signing = signing,
                 encryptedAssets = encryptedAssets,
+                extractedMethods = extractedMethods,
                 channels = channels,
                 channelFile = channelFile,
                 channelOutputDir = channelOutputDir,

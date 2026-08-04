@@ -37,6 +37,8 @@ fun main(args: Array<String>) {
     }
     val encryptedAssets = props["encryptedAssets"]?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() }
         ?: emptyList()
+    val extractedMethods = props["extractMethods"]?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() }
+        ?: emptyList()
     val channels = props["channels"]?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() } ?: emptyList()
     val channelOutputDir = props["channelOutputDir"]?.let(::File)
     val channelFile = props["channelsFile"]?.let(::File)
@@ -54,6 +56,7 @@ fun main(args: Array<String>) {
         ReinforcePipeline.Config(
             inputApk = input, outputApk = output, sdkDir = sdk,
             signing = signing, encryptedAssets = encryptedAssets,
+            extractedMethods = extractedMethods,
             channels = channels, channelFile = channelFile, channelOutputDir = channelOutputDir,
             pgyer = pgyer,
             pgyerUploadAllChannels = props["pgyerUploadAllChannels"]?.toBoolean() ?: false,

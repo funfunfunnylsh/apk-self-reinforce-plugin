@@ -19,3 +19,4 @@ out/
 
 # 本机环境配置（不入库）
 local.properties
+.kotlin/

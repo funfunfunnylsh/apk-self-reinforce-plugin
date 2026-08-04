@@ -405,11 +405,11 @@ public class StubApplication extends Application {
     }
 
     /**
-     * 从 payload zip 字节中提取全部 classes*.dex 为 direct ByteBuffer（数字序，供 InMemoryDexClassLoader）。
+     * 解开 payload zip 中的全部 classes*.dex，返回 dexIndex -> 字节。
+     * dexIndex 约定：classes.dex=0, classes2.dex=2, classesN.dex=N（与打包侧 DexMethodExtractor 一致）。
      */
-    private static ByteBuffer[] extractDexBuffers(byte[] zipBytes) throws Exception {
-        List<int[]> order = new ArrayList<int[]>();
-        List<ByteBuffer> bufs = new ArrayList<ByteBuffer>();
+    private static java.util.LinkedHashMap<Integer, byte[]> readDexEntries(byte[] zipBytes) throws Exception {
+        java.util.LinkedHashMap<Integer, byte[]> map = new java.util.LinkedHashMap<Integer, byte[]>();
         ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(zipBytes));
         ZipEntry entry;
         while ((entry = zis.getNextEntry()) != null) {
@@ -421,35 +421,120 @@ public class StubApplication extends Application {
                 while ((n = zis.read(buf)) != -1) {
                     bos.write(buf, 0, n);
                 }
-                byte[] dex = bos.toByteArray();
-                ByteBuffer bb = ByteBuffer.allocateDirect(dex.length);
-                bb.put(dex);
-                bb.rewind();
-                order.add(new int[]{dexIndex(name), bufs.size()});
-                bufs.add(bb);
+                map.put(dexIndex(name), bos.toByteArray());
             }
             zis.closeEntry();
         }
         zis.close();
-        // 按 dex 数字序排序（classes.dex=0, classes2.dex=2 ...）
-        ByteBuffer[] sorted = new ByteBuffer[bufs.size()];
-        int[] idx = new int[bufs.size()];
-        for (int i = 0; i < order.size(); i++) {
-            idx[i] = order.get(i)[0];
+        return map;
+    }
+
+    /** dexIndex 升序的 dex 字节数组（classes.dex, classes2.dex, ...） */
+    private static List<byte[]> orderedDexList(java.util.Map<Integer, byte[]> dexMap) {
+        List<Integer> keys = new ArrayList<Integer>(dexMap.keySet());
+        java.util.Collections.sort(keys);
+        List<byte[]> out = new ArrayList<byte[]>(keys.size());
+        for (Integer k : keys) {
+            out.add(dexMap.get(k));
         }
-        // 选择排序（数量少，简单可靠）
-        boolean[] used = new boolean[bufs.size()];
-        for (int k = 0; k < bufs.size(); k++) {
-            int best = -1;
-            for (int i = 0; i < bufs.size(); i++) {
-                if (!used[i] && (best < 0 || idx[i] < idx[best])) {
-                    best = i;
-                }
+        return out;
+    }
+
+    private static ByteBuffer[] toDirectBuffers(List<byte[]> dexes) {
+        ByteBuffer[] bufs = new ByteBuffer[dexes.size()];
+        for (int i = 0; i < dexes.size(); i++) {
+            byte[] dex = dexes.get(i);
+            ByteBuffer bb = ByteBuffer.allocateDirect(dex.length);
+            bb.put(dex);
+            bb.rewind();
+            bufs[i] = bb;
+        }
+        return bufs;
+    }
+
+    /** dex 重打成 zip 字节（memfd 路径使用） */
+    private static byte[] toZipBytes(java.util.Map<Integer, byte[]> dexMap) throws Exception {
+        ByteArrayOutputStream bos = new ByteArrayOutputStream();
+        java.util.zip.ZipOutputStream zos = new java.util.zip.ZipOutputStream(bos);
+        List<Integer> keys = new ArrayList<Integer>(dexMap.keySet());
+        java.util.Collections.sort(keys);
+        for (Integer idx : keys) {
+            String name = idx == 0 ? "classes.dex" : "classes" + idx + ".dex";
+            zos.putNextEntry(new ZipEntry(name));
+            zos.write(dexMap.get(idx));
+            zos.closeEntry();
+        }
+        zos.close();
+        return bos.toByteArray();
+    }
+
+    /** 把 dex 重新打成 zip（方法回填后落盘路径使用） */
+    private static void writePayloadZip(File target, java.util.Map<Integer, byte[]> dexMap) throws Exception {
+        FileOutputStream fos = new FileOutputStream(target);
+        try {
+            fos.write(toZipBytes(dexMap));
+        } finally {
+            fos.close();
+        }
+    }
+
+    /**
+     * 关键方法还原（与打包侧 DexMethodExtractor 对应）：
+     * 读取 assets/selfprotect/methods.dat，解密后按 (dexIndex, codeOff) 把原始 code_item
+     * 回填进内存中的 dex 字节 —— 真实方法体只存在于内存，静态反编译只能看到桩。
+     *
+     * @return 还原的方法数；无 methods.dat（未启用抽取）返回 0
+     */
+    private static int restoreExtractedMethods(Context base, java.util.Map<Integer, byte[]> dexMap) throws Exception {
+        byte[] enc;
+        try {
+            enc = ShellCrypto.readAll(base.getAssets().open("selfprotect/methods.dat"));
+        } catch (Throwable t) {
+            return 0; // 未启用方法抽取
+        }
+        if (enc.length == 0) {
+            return 0;
+        }
+        byte[] blob = null;
+        if (ShellNative.isLoaded()) {
+            blob = ShellNative.decryptPayload(enc);
+        }
+        if (blob == null) {
+            blob = ShellCrypto.decrypt(enc);
+        }
+        // 格式：'S','P','M','E' | u32 version | u32 count | [u16 dexIndex|u32 codeOff|u32 len|bytes]（小端）
+        if (blob.length < 12 || blob[0] != 'S' || blob[1] != 'P' || blob[2] != 'M' || blob[3] != 'E') {
+            throw new IllegalStateException("methods.dat magic 不匹配（可能被篡改）");
+        }
+        long count = u32le(blob, 8);
+        int pos = 12;
+        int restored = 0;
+        for (long i = 0; i < count; i++) {
+            int dexIndex = u16le(blob, pos);
+            pos += 2;
+            long codeOff = u32le(blob, pos);
+            pos += 4;
+            long len = u32le(blob, pos);
+            pos += 4;
+            byte[] dex = dexMap.get(dexIndex);
+            if (dex == null || codeOff < 0 || codeOff + len > dex.length || len < 0 || pos + len > blob.length) {
+                throw new IllegalStateException("methods.dat 记录越界（dexIndex=" + dexIndex
+                        + ", codeOff=" + codeOff + ", len=" + len + "）");
             }
-            sorted[k] = bufs.get(best);
-            used[best] = true;
+            System.arraycopy(blob, pos, dex, (int) codeOff, (int) len);
+            pos += (int) len;
+            restored++;
         }
-        return sorted;
+        return restored;
+    }
+
+    private static int u16le(byte[] b, int off) {
+        return (b[off] & 0xFF) | ((b[off + 1] & 0xFF) << 8);
+    }
+
+    private static long u32le(byte[] b, int off) {
+        return ((long) b[off] & 0xFF) | (((long) b[off + 1] & 0xFF) << 8)
+                | (((long) b[off + 2] & 0xFF) << 16) | (((long) b[off + 3] & 0xFF) << 24);
     }
 
     private static int dexIndex(String name) {
@@ -459,6 +544,7 @@ public class StubApplication extends Application {
 
     /**
      * 创建内存 ClassLoader 并替换 LoadedApk.mClassLoader，parent 设为原 ClassLoader：
+     *  0. 解开 payload zip；若存在 methods.dat 则先把抽取的方法体回填进内存 dex（真实字节码不落 APK）
      *  - API 26+：优先 InMemoryDexClassLoader（零落盘）；构造失败回退 DexClassLoader 落盘临时文件
      *  - API < 26：native memfd_create + DexClassLoader("/proc/self/fd/N")（匿名内存，不落盘）
      * 替换后同步 mBoundApplication.info（防 Activity 侧 LoadedApk 与 context 侧不同实例）。
@@ -467,12 +553,19 @@ public class StubApplication extends Application {
         ClassLoader oldLoader = base.getClassLoader();
         ClassLoader newLoader = null;
 
+        // 解开 payload，并按需回填被抽取的方法体（methods.dat）
+        java.util.LinkedHashMap<Integer, byte[]> dexMap = readDexEntries(zipBytes);
+        if (dexMap.isEmpty()) {
+            throw new IllegalStateException("payload 内未找到 classes*.dex");
+        }
+        int restored = restoreExtractedMethods(base, dexMap);
+        if (restored > 0) {
+            Log.i(TAG, "extracted methods restored in memory: " + restored);
+        }
+
         if (USE_IN_MEMORY_LOADER && Build.VERSION.SDK_INT >= 26) {
             try {
-                ByteBuffer[] dexs = extractDexBuffers(zipBytes);
-                if (dexs.length == 0) {
-                    throw new IllegalStateException("payload 内未找到 classes*.dex");
-                }
+                ByteBuffer[] dexs = toDirectBuffers(orderedDexList(dexMap));
                 newLoader = new InMemoryDexClassLoader(dexs, oldLoader);
                 Log.i(TAG, "InMemoryDexClassLoader created, dex count=" + dexs.length);
             } catch (Throwable t) {
@@ -484,7 +577,8 @@ public class StubApplication extends Application {
         if (newLoader == null) {
             // 回退/默认：memfd（API<26 或 native 可用时，不落盘）
             if (USE_IN_MEMORY_LOADER && ShellNative.isLoaded()) {
-                int fd = ShellNative.createMemfd("payload.zip", zipBytes);
+                // 回填后的 dex 可能与原 payload 不同，必须用重打包后的字节
+                int fd = ShellNative.createMemfd("payload.zip", restored > 0 ? toZipBytes(dexMap) : zipBytes);
                 if (fd >= 0) {
                     try {
                         File odexDir = new File(base.getFilesDir(), WORK_DIR + "/odex");
@@ -510,12 +604,7 @@ public class StubApplication extends Application {
                     throw new IllegalStateException("无法创建工作目录: " + dir);
                 }
                 File zip = new File(dir, "payload.zip");
-                java.io.FileOutputStream fos = new java.io.FileOutputStream(zip);
-                try {
-                    fos.write(zipBytes);
-                } finally {
-                    fos.close();
-                }
+                writePayloadZip(zip, dexMap);
                 File odexDir = new File(dir, "odex");
                 if (!odexDir.exists()) {
                     odexDir.mkdirs();
