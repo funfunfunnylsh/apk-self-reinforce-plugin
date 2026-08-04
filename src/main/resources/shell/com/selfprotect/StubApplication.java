@@ -44,6 +44,14 @@ public class StubApplication extends Application {
     private static final String CONFIG_ASSET = "selfprotect/config.txt";
     private static final String WORK_DIR = "selfprotect";
 
+    /**
+     * 内存加载开关（v1.2.3 默认 false）：
+     *  - false：DexClassLoader 落盘（v1.1.x 真机验证过的路径，最稳）
+     *  - true ：API26+ InMemoryDexClassLoader（零落盘），失败自动回退落盘
+     * 真机稳定后可切回 true 以恢复"载荷不落盘"。
+     */
+    private static final boolean USE_IN_MEMORY_LOADER = false;
+
     private Application mRealApplication;
     private ArrayList<ActivityLifecycleCallbacks> mPendingCallbacks;
 
@@ -458,9 +466,8 @@ public class StubApplication extends Application {
     private static ClassLoader installClassLoaderInMemory(Context base, byte[] zipBytes) throws Exception {
         ClassLoader oldLoader = base.getClassLoader();
         ClassLoader newLoader = null;
-        Exception inMemoryError = null;
 
-        if (Build.VERSION.SDK_INT >= 26) {
+        if (USE_IN_MEMORY_LOADER && Build.VERSION.SDK_INT >= 26) {
             try {
                 ByteBuffer[] dexs = extractDexBuffers(zipBytes);
                 if (dexs.length == 0) {
@@ -469,15 +476,14 @@ public class StubApplication extends Application {
                 newLoader = new InMemoryDexClassLoader(dexs, oldLoader);
                 Log.i(TAG, "InMemoryDexClassLoader created, dex count=" + dexs.length);
             } catch (Throwable t) {
-                inMemoryError = (t instanceof Exception) ? (Exception) t : new RuntimeException(t);
                 newLoader = null;
                 Log.w(TAG, "InMemoryDexClassLoader failed: " + t);
             }
         }
 
         if (newLoader == null) {
-            // 回退 1：memfd（API<26 或 native 可用时）
-            if (ShellNative.isLoaded()) {
+            // 回退/默认：memfd（API<26 或 native 可用时，不落盘）
+            if (USE_IN_MEMORY_LOADER && ShellNative.isLoaded()) {
                 int fd = ShellNative.createMemfd("payload.zip", zipBytes);
                 if (fd >= 0) {
                     try {
@@ -497,7 +503,7 @@ public class StubApplication extends Application {
                     }
                 }
             }
-            // 回退 2：落盘临时文件（保证可用性优先，加载后保留便于诊断）
+            // 默认/兜底：落盘临时文件（v1.1.x 验证过的稳定路径）
             if (newLoader == null) {
                 File dir = new File(base.getFilesDir(), WORK_DIR);
                 if (!dir.exists() && !dir.mkdirs()) {
@@ -519,7 +525,7 @@ public class StubApplication extends Application {
                         odexDir.getAbsolutePath(),
                         buildLibrarySearchPath(base, oldLoader),
                         oldLoader);
-                Log.w(TAG, "fallback DexClassLoader (payload 落盘): " + zip);
+                Log.i(TAG, "DexClassLoader (payload 落盘): " + zip);
             }
         }
 
