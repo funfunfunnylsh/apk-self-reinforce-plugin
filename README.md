@@ -15,12 +15,15 @@ DEX 整体加密 · 壳 Application 入口替换 · 防重打包 · 反调试/�
 | 能力 | 说明 |
 |---|---|
 | 🔒 **DEX 整体加密** | 原始 `classes*.dex` → AES/CBC 加密为 `assets/selfprotect/payload.dat`，运行时解密加载（多 dex 数字序） |
+| 🧬 **native 壳层** | 解密/完整性/安全检测在 `libselfprotect.so`（NDK 编译，双 ABI），密钥编译进 so（混淆存储），Frida hook Java 层拿不到密钥与明文 |
+| 💾 **载荷不落盘** | API 26+ `InMemoryDexClassLoader(ByteBuffer[])` 内存加载；API<26 native `memfd_create` + `/proc/self/fd/N`，全程无明文文件落盘 |
+| 🚫 **native 反调试** | `ptrace(TRACEME)` 自附加 + 后台线程轮询 `TracerPid` + frida/gadget maps 特征 + 27042 端口探测，命中即杀 |
+| 🧭 **反模拟器/反 root** | `ro.kernel.qemu`/`goldfish`/`ranchu` 等模拟器特征；`su` 路径/Magisk/mounts 检测 |
 | 🛡 **防重打包** | 打包时提取签名证书 SHA-256（XOR 掩码存储），壳启动比对 `PackageManager` 实际签名，不一致立即杀进程 |
-| 🚫 **基础反调试** | `debuggable` 标志 / `Debug.isDebuggerConnected` / `TracerPid` 检测，命中即杀 |
-| 🚫 **反动态注入** | 扫描 `/proc/self/maps` 的 frida / xposed / substrate / zygisk 特征库 + hook 框架类探测 |
-| 🔐 **载荷完整性** | payload 密文 SHA-256（掩码存储）预置，壳解密前校验，防 APK 内载荷被整体替换 |
+| 🔐 **载荷完整性** | payload 密文 SHA-256（native 计算，掩码存储）预置，壳解密前校验，防 APK 内载荷被整体替换 |
 | 📦 **assets 资源加密** | 白名单内 assets 加密为 `assets/enc/*`，`SecureAssets.open()` 透明解密，可增量接入 |
 | 📦 **多渠道打包** | 复刻 walle：直接写 APK Signing Block（ID 0x71777777），无需重签名；支持配置列表 + txt 文件 |
+| 🧭 **运行时读渠道** | 插件自动注入 `ChannelReader`，App 内 `ChannelReader.getChannel(this)` 直接读取（walle 兼容） |
 | 📤 **蒲公英上传** | 可选：直连 apiv2 API 上传 + 轮询发布状态，输出下载短链/二维码 |
 | 🔔 **钉钉通知** | 可选：构建完成发 markdown 到群机器人，支持「加签」安全设置 |
 | ✏️ **Manifest 入口替换** | 自写二进制 AXML 解析器：application name → 壳 `StubApplication`，`appComponentFactory` → 框架默认 |
@@ -274,16 +277,19 @@ apk-self-reinforce-plugin/
 
 ## 已知限制
 
-- 一代壳：DEX 整体加密，未做方法级 VMP / 抽取；对抗内存 dump 需 native 层。
-- 载荷解密后落盘 `files/selfprotect/payload.zip`；可升级 API≥26 走 `InMemoryDexClassLoader` 不落盘。
-- 反调试/反动态注入为 Java 层基础检测，对抗 Xposed/Frida 的主动分析需 native 化（Roadmap 见下）。
+- 一代壳 + native 加固层：DEX 整体加密（native 解密、内存加载不落盘），未做方法级 VMP / 抽取。
+- native 层为 C 实现（自写 AES/SHA256，零外部依赖），反调试/环境检测为常见特征库，对抗定制化对抗需持续迭代。
+- 反调试后台线程与反模拟器/root 为**默认开启**，可通过 `ShellNative.init` 的 flags 按需关闭；真机误杀时用 `adb logcat -s SelfProtectNative` 查看命中原因。
+- native 编译依赖本机 NDK（`sdk/ndk` 或 `ANDROID_NDK_HOME`）；缺失时自动跳过 so 注入并降级为 Java 层检测。
 
 ## Roadmap
 
-- [ ] 壳核心逻辑 native 化（解密/校验/loader 安装下沉 .so，JNI 完成）
-- [ ] API≥26 内存加载 dex（InMemoryDexClassLoader 不落盘）
-- [ ] 敏感方法抽取到 native 执行
-- [ ] 模拟器/root 检测、运行环境安全
+- [x] 壳核心逻辑 native 化（解密/完整性/安全检测下沉 libselfprotect.so）
+- [x] 载荷不落盘（API≥26 InMemoryDexClassLoader / API<26 memfd）
+- [x] native 反调试 + 反模拟器/root
+- [x] SO 字符串混淆（volatile XOR，防 clang 常量折叠）
+- [ ] 关键方法轻量抽取（1-N 个敏感方法字节码抽到 native，运行时还原）
+- [ ] 敏感方法接入 nmmvm 解释器（Apache 2.0）做 dex-vm 试点（详见 DEX/SO VMP 难度调研）
 
 ## License
 
