@@ -71,6 +71,7 @@ Changing any of these in one place and not the other silently breaks runtime:
 | `SIG_MASK` (32B, applied to SHA-256 of signing cert) | `core/ApkReinforcer.kt` | `StubApplication.java` |
 | `PAYLOAD_MASK` (32B, applied to SHA-256 of payload ciphertext) | `core/ApkReinforcer.kt` | `StubApplication.java` |
 | Asset paths (`payload.dat`, `config.txt`, `expected_sig.txt`, `payload_hash.txt`, `assets_map.txt`, `assets/enc/`) | `ApkReinforcer` constants | `StubApplication` / `SecureAssets` string literals |
+| DEX checksum recalculation (SHA-1 at off 12-31 + adler32 at off 8-11, after method restoration) | `DexMethodExtractor.fixDexHeader` | `StubApplication.fixDexChecksums` |
 
 The default key/mask values in the repo are public — production deployments must replace all of them.
 
@@ -88,6 +89,6 @@ JUnit 4. Tests rely on real binary `AndroidManifest.xml` samples in `src/test/re
 
 ## Notes
 
-- The shell is a "first-generation" shell: whole-DEX encryption, no method-level VMP. Payload decrypts to `files/selfprotect/payload.zip` on disk — `InMemoryDexClassLoader` (API ≥26) is on the roadmap.
+- The shell uses whole-DEX encryption plus lightweight method extraction (code_item抽空 + runtime memory restoration via methods.dat). Payload decrypts to `files/selfprotect/payload.zip` on disk — `InMemoryDexClassLoader` (API ≥26) is on the roadmap.
 - Anti-debug/anti-hook checks are Java-layer and baseline-only; determined analysis with Frida/Xposed still requires native hardening (roadmap).
 - Published to JitPack as `com.github.funfunfunnylsh:apk-self-reinforce-plugin:v1.0.0`. The `publication.artifactId` is intentionally aligned with the repo name for JitPack rewriting.

@@ -542,6 +542,32 @@ public class StubApplication extends Application {
         return n.isEmpty() ? 0 : Integer.parseInt(n);
     }
 
+    private static void writeU32(byte[] buf, int off, long v) {
+        buf[off] = (byte) (v & 0xFF);
+        buf[off + 1] = (byte) ((v >>> 8) & 0xFF);
+        buf[off + 2] = (byte) ((v >>> 16) & 0xFF);
+        buf[off + 3] = (byte) ((v >>> 24) & 0xFF);
+    }
+
+    /**
+     * 修改 dex 字节后重算 header 中的 SHA-1 签名（offset 12-31）与 adler32 校验和（offset 8-11）。
+     * 与打包侧 DexMethodExtractor.fixDexHeader 同算法。
+     * restoreExtractedMethods 回填原始 code_item 后必须调用，否则 ART 校验和不匹配
+     * 会静默拒绝加载该 dex -> dexElements 为空 -> ClassNotFoundException。
+     */
+    private static void fixDexChecksums(byte[] dex) {
+        try {
+            java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-1");
+            byte[] sha = md.digest(java.util.Arrays.copyOfRange(dex, 32, dex.length));
+            System.arraycopy(sha, 0, dex, 12, 20);
+            java.util.zip.Adler32 adler = new java.util.zip.Adler32();
+            adler.update(dex, 12, dex.length - 12);
+            writeU32(dex, 8, adler.getValue());
+        } catch (Throwable t) {
+            Log.w(TAG, "fixDexChecksums failed: " + t);
+        }
+    }
+
     /**
      * 创建内存 ClassLoader 并替换 LoadedApk.mClassLoader，parent 设为原 ClassLoader：
      *  0. 解开 payload zip；若存在 methods.dat 则先把抽取的方法体回填进内存 dex（真实字节码不落 APK）
@@ -561,6 +587,11 @@ public class StubApplication extends Application {
         int restored = restoreExtractedMethods(base, dexMap);
         if (restored > 0) {
             Log.i(TAG, "extracted methods restored in memory: " + restored);
+            // 回填原始 code_item 后 dex 字节已变，必须重算 SHA-1/adler32，
+            // 否则 DexClassLoader 加载时 ART 校验和不匹配会静默拒绝 dex -> ClassNotFoundException
+            for (byte[] dex : dexMap.values()) {
+                fixDexChecksums(dex);
+            }
         }
 
         if (USE_IN_MEMORY_LOADER && Build.VERSION.SDK_INT >= 26) {
