@@ -8,10 +8,11 @@ import kotlin.system.exitProcess
 /**
  * 命令行入口，便于不接入业务工程直接验证加固流水线：
  *
- * ./gradlew :apk-self-reinforce-plugin:selfReinforceCli \
+ * ./gradlew :selfReinforceCli \
  *   -PinputApk=/path/app.apk -PoutputApk=/path/out.apk \
  *   [-PsdkDir=/path/sdk] [-Pks=/path/ks -PksPass=xxx -Palias=xxx -PkeyPass=xxx] \
- *   [-PencryptedAssets=maps/,config.json]
+ *   [-PencryptedAssets=maps/,config.json] \
+ *   [-Pchannels=oppo,xiaomi] [-PchannelOutputDir=/path/channels]
  */
 fun main(args: Array<String>) {
     val props = args.mapNotNull {
@@ -22,7 +23,7 @@ fun main(args: Array<String>) {
     val input = props["inputApk"]?.let(::File)
     val output = props["outputApk"]?.let(::File)
     if (input == null || output == null) {
-        System.err.println("用法：selfReinforceCli -PinputApk=... -PoutputApk=... [-PsdkDir=...] [-Pks=... -PksPass=... -Palias=... -PkeyPass=...] [-PencryptedAssets=a,b]")
+        System.err.println("用法：selfReinforceCli -PinputApk=... -PoutputApk=... [-PsdkDir=...] [-Pks=... -PksPass=... -Palias=... -PkeyPass=...] [-PencryptedAssets=a,b] [-Pchannels=a,b]")
         exitProcess(1)
     }
     val sdk = props["sdkDir"]?.let(::File) ?: ReinforcePipeline.detectSdkDir()
@@ -36,11 +37,14 @@ fun main(args: Array<String>) {
     }
     val encryptedAssets = props["encryptedAssets"]?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() }
         ?: emptyList()
+    val channels = props["channels"]?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() } ?: emptyList()
+    val channelOutputDir = props["channelOutputDir"]?.let(::File)
 
     ReinforcePipeline.run(
         ReinforcePipeline.Config(
             inputApk = input, outputApk = output, sdkDir = sdk,
-            signing = signing, encryptedAssets = encryptedAssets
+            signing = signing, encryptedAssets = encryptedAssets,
+            channels = channels, channelOutputDir = channelOutputDir
         )
     )
 }

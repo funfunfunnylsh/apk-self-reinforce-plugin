@@ -8,18 +8,24 @@ import java.io.File
 /**
  * 自研 APK 加固插件（不依赖任何第三方加固二进制）。
  *
+ * 全部配置项均有默认值：
+ *  - inputApk  : 默认取 build/outputs/apk/release 下最新 APK
+ *  - outputApk : 默认 inputApk 同目录 app-selfprotect.apk
+ *  - 签名      : 优先级 = 显式配置 > android signingConfigs(release) > ~/.android/debug.keystore
+ *  - channels  : 配置后加固完自动产出多渠道包（写入 Signing Block，无需重签名）
+ *
  * 用法（业务 app 模块中）：
  * ```
  * plugins { id("com.cdtec.plugin.apk-self-reinforce") }
  * selfReinforce {
- *     inputApk.set(layout.buildDirectory.file("outputs/apk/release/app-release.apk"))
- *     outputApk.set(layout.buildDirectory.file("outputs/apk/release/app-release-selfprotect.apk"))
- *     sdkDir.set("/Users/xxx/Library/Android/sdk")   // 可选，默认自动探测
- *     // 以下不配置则只输出对齐后的未签名包
- *     storeFile.set(file("xxx.keystore"))
- *     storePassword.set("...")
- *     keyAlias.set("...")
- *     keyPassword.set("...")
+ *     inputApk.set(...)            // 可选
+ *     outputApk.set(...)           // 可选
+ *     sdkDir.set("...")            // 可选，默认自动探测
+ *     storeFile.set(file("xxx.keystore")); storePassword.set("...")  // 可选
+ *     keyAlias.set("..."); keyPassword.set("...")                    // 可选
+ *     encryptedAssets.add("maps/") // 可选：assets 加密规则
+ *     channels.addAll(listOf("oppo", "xiaomi", "huawei"))  // 可选：多渠道
+ *     channelOutputDir.set(...)    // 可选，默认 outputApk 同目录 channels/
  * }
  * ```
  * 执行：./gradlew selfReinforceApk
@@ -35,6 +41,12 @@ abstract class SelfReinforceExtension(project: Project) {
 
     /** 需要加密的 assets 路径规则（前缀/精确匹配，如 "maps/"、"config.json"），空则不加密 */
     val encryptedAssets: MutableList<String> = mutableListOf()
+
+    /** 多渠道列表（如 oppo/xiaomi/huawei），空则不产渠道包 */
+    val channels: MutableList<String> = mutableListOf()
+
+    /** 渠道包输出目录，默认 outputApk 同目录 channels/ */
+    val channelOutputDir = project.objects.directoryProperty()
 }
 
 class SelfReinforcePlugin : Plugin<Project> {

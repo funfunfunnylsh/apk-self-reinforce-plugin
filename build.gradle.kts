@@ -17,6 +17,8 @@ kotlin {
 
 dependencies {
     implementation("org.jetbrains.kotlin:kotlin-stdlib:1.9.0")
+    // 读取 android signingConfigs 需要 AGP 类型（compileOnly：不打包进插件，由宿主工程提供）
+    compileOnly("com.android.tools.build:gradle:8.7.3")
     testImplementation("junit:junit:4.13.2")
 }
 
@@ -36,7 +38,7 @@ tasks.register<JavaExec>("selfReinforceCli") {
     group = "reinforce"
     mainClass.set("com.cdtec.selfreinforce.ReinforceCliKt")
     classpath = sourceSets["main"].runtimeClasspath
-    val props = listOf("inputApk", "outputApk", "sdkDir", "ks", "ksPass", "alias", "keyPass", "encryptedAssets")
+    val props = listOf("inputApk", "outputApk", "sdkDir", "ks", "ksPass", "alias", "keyPass", "encryptedAssets", "channels", "channelOutputDir")
         .mapNotNull { k -> project.findProperty(k)?.let { "$k=$it" } }
     args = props
 }

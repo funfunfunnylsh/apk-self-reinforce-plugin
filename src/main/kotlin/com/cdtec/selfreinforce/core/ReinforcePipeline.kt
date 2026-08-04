@@ -14,6 +14,8 @@ object ReinforcePipeline {
         val sdkDir: File,
         val signing: Signer.SigningConfig? = null,
         val encryptedAssets: List<String> = emptyList(),
+        val channels: List<String> = emptyList(),
+        val channelOutputDir: File? = null,
         val workDir: File = File(outputApk.parentFile ?: File("."), "self-reinforce-work")
     )
 
@@ -51,6 +53,28 @@ object ReinforcePipeline {
         log("[4/4] apksigner 重签${if (config.signing == null) "（未配置签名，仅对齐输出）" else ""}...")
         Signer.alignAndSign(unsigned, config.outputApk, config.sdkDir, config.signing)
         log("完成：${config.outputApk.absolutePath}")
+
+        // 多渠道（可选）：写入 Signing Block，无需重签名
+        if (config.channels.isNotEmpty()) {
+            writeChannels(config, log)
+        }
+    }
+
+    /** 为每个渠道复制加固包并写入渠道信息（walle 方案，保留原签名） */
+    private fun writeChannels(config: Config, log: (String) -> Unit) {
+        val outDir = config.channelOutputDir ?: File(config.outputApk.parentFile, "channels")
+        outDir.mkdirs()
+        val baseBytes = config.outputApk.readBytes()
+        val baseName = config.outputApk.name.removeSuffix(".apk")
+        config.channels.forEach { channel ->
+            val channelApk = File(outDir, "${baseName}_${channel}.apk")
+            channelApk.writeBytes(ChannelWriter.writeChannel(baseBytes, channel))
+            val verify = ChannelWriter.readChannel(channelApk.readBytes())
+            if (verify != channel) {
+                throw IllegalStateException("渠道 $channel 写入校验失败：读到 $verify")
+            }
+            log("      渠道包：${channelApk.name}（channel=$channel）")
+        }
     }
 
     /** 用 apksigner 提取 APK 签名证书 SHA-256（hex 小写） */
