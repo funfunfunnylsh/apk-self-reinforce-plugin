@@ -45,8 +45,26 @@ abstract class SelfReinforceExtension(project: Project) {
     /** 多渠道列表（如 oppo/xiaomi/huawei），空则不产渠道包 */
     val channels: MutableList<String> = mutableListOf()
 
+    /** 多渠道 txt 文件（可选，每行一个渠道，# 注释；与 channels 配置合并去重） */
+    val channelFile = project.objects.fileProperty()
+
     /** 渠道包输出目录，默认 outputApk 同目录 channels/ */
     val channelOutputDir = project.objects.directoryProperty()
+
+    // ===== 蒲公英上传（可选，配置 pgyerApiKey 即启用）=====
+    val pgyerApiKey: Property<String> = project.objects.property(String::class.java)
+    val pgyerInstallType: Property<String> = project.objects.property(String::class.java) // 1公开 2密码 3邀请
+    val pgyerInstallPassword: Property<String> = project.objects.property(String::class.java)
+    val pgyerUpdateDescription: Property<String> = project.objects.property(String::class.java)
+    /** true 时所有渠道包也上传蒲公英（默认只传主包） */
+    val pgyerUploadAllChannels: Property<Boolean> = project.objects.property(Boolean::class.java)
+
+    // ===== 钉钉群机器人通知（可选，配置 dingTalkWebhook 即启用）=====
+    val dingTalkWebhook: Property<String> = project.objects.property(String::class.java)
+    /** 机器人「加签」密钥（可选，配置后自动附加 timestamp/sign） */
+    val dingTalkSecret: Property<String> = project.objects.property(String::class.java)
+    /** 消息标题关键字（钉钉机器人安全设置的关键字，用于构建消息标题） */
+    val dingTalkKeyword: Property<String> = project.objects.property(String::class.java)
 }
 
 class SelfReinforcePlugin : Plugin<Project> {

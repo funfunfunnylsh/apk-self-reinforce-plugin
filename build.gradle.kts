@@ -38,8 +38,12 @@ tasks.register<JavaExec>("selfReinforceCli") {
     group = "reinforce"
     mainClass.set("com.cdtec.selfreinforce.ReinforceCliKt")
     classpath = sourceSets["main"].runtimeClasspath
-    val props = listOf("inputApk", "outputApk", "sdkDir", "ks", "ksPass", "alias", "keyPass", "encryptedAssets", "channels", "channelOutputDir")
-        .mapNotNull { k -> project.findProperty(k)?.let { "$k=$it" } }
+    val props = listOf(
+        "inputApk", "outputApk", "sdkDir", "ks", "ksPass", "alias", "keyPass",
+        "encryptedAssets", "channels", "channelsFile", "channelOutputDir",
+        "pgyerApiKey", "pgyerInstallType", "pgyerInstallPassword", "pgyerUpdateDescription", "pgyerUploadAllChannels",
+        "dingTalkWebhook", "dingTalkSecret", "dingTalkKeyword"
+    ).mapNotNull { k -> project.findProperty(k)?.let { "$k=$it" } }
     args = props
 }
 

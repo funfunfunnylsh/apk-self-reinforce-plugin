@@ -15,7 +15,13 @@ object ReinforcePipeline {
         val signing: Signer.SigningConfig? = null,
         val encryptedAssets: List<String> = emptyList(),
         val channels: List<String> = emptyList(),
+        val channelFile: File? = null,
         val channelOutputDir: File? = null,
+        val pgyer: PgyerUploader.Config? = null,
+        val pgyerUploadAllChannels: Boolean = false,
+        val dingTalkWebhook: String? = null,
+        val dingTalkSecret: String? = null,
+        val dingTalkKeyword: String = "Android",
         val workDir: File = File(outputApk.parentFile ?: File("."), "self-reinforce-work")
     )
 
@@ -54,19 +60,35 @@ object ReinforcePipeline {
         Signer.alignAndSign(unsigned, config.outputApk, config.sdkDir, config.signing)
         log("完成：${config.outputApk.absolutePath}")
 
-        // 多渠道（可选）：写入 Signing Block，无需重签名
-        if (config.channels.isNotEmpty()) {
-            writeChannels(config, log)
+        // 多渠道（可选）：配置渠道 + 渠道文件合并去重，写入 Signing Block 无需重签名
+        val allChannels = ChannelLoader.merge(config.channels, config.channelFile)
+        val channelApks = if (allChannels.isNotEmpty()) {
+            writeChannels(config, allChannels, log)
+        } else {
+            emptyMap()
+        }
+
+        // 蒲公英上传（可选）
+        val pgyerResults = if (config.pgyer != null) {
+            uploadToPgyer(config, channelApks, log)
+        } else {
+            emptyList()
+        }
+
+        // 钉钉通知（可选）
+        if (!config.dingTalkWebhook.isNullOrBlank()) {
+            sendDingTalk(config, channelApks, pgyerResults, log)
         }
     }
 
-    /** 为每个渠道复制加固包并写入渠道信息（walle 方案，保留原签名） */
-    private fun writeChannels(config: Config, log: (String) -> Unit) {
+    /** 为每个渠道复制加固包并写入渠道信息（walle 方案，保留原签名），返回 渠道名 -> 渠道包 */
+    private fun writeChannels(config: Config, channels: List<String>, log: (String) -> Unit): Map<String, File> {
         val outDir = config.channelOutputDir ?: File(config.outputApk.parentFile, "channels")
         outDir.mkdirs()
         val baseBytes = config.outputApk.readBytes()
         val baseName = config.outputApk.name.removeSuffix(".apk")
-        config.channels.forEach { channel ->
+        val result = LinkedHashMap<String, File>()
+        channels.forEach { channel ->
             val channelApk = File(outDir, "${baseName}_${channel}.apk")
             channelApk.writeBytes(ChannelWriter.writeChannel(baseBytes, channel))
             val verify = ChannelWriter.readChannel(channelApk.readBytes())
@@ -74,7 +96,65 @@ object ReinforcePipeline {
                 throw IllegalStateException("渠道 $channel 写入校验失败：读到 $verify")
             }
             log("      渠道包：${channelApk.name}（channel=$channel）")
+            result[channel] = channelApk
         }
+        return result
+    }
+
+    /** 蒲公英上传：默认主包；pgyerUploadAllChannels=true 时同时上传全部渠道包 */
+    private fun uploadToPgyer(
+        config: Config,
+        channelApks: Map<String, File>,
+        log: (String) -> Unit
+    ): List<Pair<String, PgyerUploader.Result>> {
+        val pgyer = config.pgyer!!
+        val results = mutableListOf<Pair<String, PgyerUploader.Result>>()
+        val targets = mutableListOf<Pair<String, File>>("主包" to config.outputApk)
+        if (config.pgyerUploadAllChannels) {
+            channelApks.forEach { (ch, f) -> targets += "渠道-$ch" to f }
+        }
+        targets.forEach { (label, file) ->
+            val r = PgyerUploader.uploadAndWait(file, pgyer) { log("      [蒲公英] $it") }
+            log("      [蒲公英] $label 上传完成：${r.buildShortcutUrl}")
+            results += label to r
+        }
+        return results
+    }
+
+    /** 钉钉 markdown 通知（参考 wh-trans-ios：标题/分支/版本/蒲公英下载与二维码/包体/变更） */
+    private fun sendDingTalk(
+        config: Config,
+        channelApks: Map<String, File>,
+        pgyerResults: List<Pair<String, PgyerUploader.Result>>,
+        log: (String) -> Unit
+    ) {
+        val keyword = config.dingTalkKeyword
+        val title = "$keyword Android 包更新"
+        val sb = StringBuilder()
+        sb.append("### ").append(title).append("\n\n")
+        sb.append("包名: ").append(config.inputApk.name.removeSuffix(".apk")).append("\n\n")
+        sb.append("加固包: ").append(config.outputApk.name).append("\n\n")
+        sb.append("包体: ").append(config.outputApk.length() / 1024 / 1024).append(" MB\n\n")
+        sb.append("构建时间: ").append(java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(java.util.Date())).append("\n\n")
+        if (channelApks.isNotEmpty()) {
+            sb.append("**渠道包**\n\n").append(channelApks.keys.joinToString(" / ")).append("\n\n")
+        }
+        if (pgyerResults.isNotEmpty()) {
+            sb.append("**蒲公英**\n\n")
+            pgyerResults.forEach { (label, r) ->
+                sb.append("- ").append(label).append("\n")
+                if (r.buildShortcutUrl.isNotBlank()) sb.append("  下载: ").append(r.buildShortcutUrl).append("\n")
+                if (r.buildQRCodeURL.isNotBlank()) sb.append("  ![二维码](").append(r.buildQRCodeURL).append(")\n")
+                if (r.buildVersion.isNotBlank()) sb.append("  版本: ").append(r.buildVersion).append("\n")
+            }
+            config.pgyer?.installPassword?.takeIf { it.isNotBlank() }?.let {
+                sb.append("\n安装密码: ").append(it).append("\n")
+            }
+        }
+        val resp = DingTalkNotifier.sendMarkdown(
+            config.dingTalkWebhook!!, config.dingTalkSecret, "### $title", sb.toString()
+        )
+        log("      [钉钉] 通知发送成功（errcode=0）")
     }
 
     /** 用 apksigner 提取 APK 签名证书 SHA-256（hex 小写） */

@@ -20,6 +20,9 @@ DEX 整体加密 · 壳 Application 入口替换 · 防重打包 · 反调试/�
 | 🚫 **反动态注入** | 扫描 `/proc/self/maps` 的 frida / xposed / substrate / zygisk 特征库 + hook 框架类探测 |
 | 🔐 **载荷完整性** | payload 密文 SHA-256（掩码存储）预置，壳解密前校验，防 APK 内载荷被整体替换 |
 | 📦 **assets 资源加密** | 白名单内 assets 加密为 `assets/enc/*`，`SecureAssets.open()` 透明解密，可增量接入 |
+| 📦 **多渠道打包** | 复刻 walle：直接写 APK Signing Block（ID 0x71777777），无需重签名；支持配置列表 + txt 文件 |
+| 📤 **蒲公英上传** | 可选：直连 apiv2 API 上传 + 轮询发布状态，输出下载短链/二维码 |
+| 🔔 **钉钉通知** | 可选：构建完成发 markdown 到群机器人，支持「加签」安全设置 |
 | ✏️ **Manifest 入口替换** | 自写二进制 AXML 解析器：application name → 壳 `StubApplication`，`appComponentFactory` → 框架默认 |
 | 📝 **重签名** | zipalign（`-P 16 4` 页对齐）+ apksigner（v1/v2） |
 
@@ -64,7 +67,9 @@ sh gradlew :selfReinforceCli \
   -PinputApk=/path/app-release.apk \
   -PoutputApk=/path/app-selfprotect.apk \
   -Pks=/path/keystore -PksPass=xxx -Palias=xxx -PkeyPass=xxx \
-  -PencryptedAssets=maps/,config.json
+  -PencryptedAssets=maps/,config.json \
+  -Pchannels=oppo,xiaomi -PchannelsFile=/path/channels.txt \
+  -PpgyerApiKey=xxx -PdingTalkWebhook='https://oapi.dingtalk.com/robot/send?access_token=xxx'
 ```
 
 参数说明：
@@ -75,6 +80,17 @@ sh gradlew :selfReinforceCli \
 | `outputApk` | ✅ | 输出路径 |
 | `ks/ksPass/alias/keyPass` | 可选 | keystore 重签名；不传则输出对齐后的未签名包（不预置防重打包指纹） |
 | `encryptedAssets` | 可选 | 需要加密的 assets 路径（前缀/精确匹配，逗号分隔） |
+| `channels` | 可选 | 多渠道列表（逗号分隔），产渠道包（写入 Signing Block，无需重签名） |
+| `channelsFile` | 可选 | 多渠道 txt 文件（每行一个渠道，支持 `#` 注释），与 channels 合并去重 |
+| `channelOutputDir` | 可选 | 渠道包输出目录，默认 outputApk 同目录 `channels/` |
+| `pgyerApiKey` | 可选 | 蒲公英 API Key，配置后上传主包到蒲公英并轮询出下载链接 |
+| `pgyerInstallType` | 可选 | 蒲公英安装类型：1公开 2密码 3邀请（默认 2） |
+| `pgyerInstallPassword` | 可选 | 蒲公英密码安装时的密码 |
+| `pgyerUpdateDescription` | 可选 | 蒲公英更新说明 |
+| `pgyerUploadAllChannels` | 可选 | true 时所有渠道包也上传蒲公英（默认只传主包） |
+| `dingTalkWebhook` | 可选 | 钉钉群机器人 webhook（含 access_token），配置后发送 markdown 通知 |
+| `dingTalkSecret` | 可选 | 钉钉机器人「加签」密钥，配置后自动附加 timestamp/sign |
+| `dingTalkKeyword` | 可选 | 通知标题关键字（默认 Android） |
 | `sdkDir` | 可选 | Android SDK 路径，默认自动探测 |
 
 ### 方式二：接入业务 app 模块
@@ -92,13 +108,27 @@ plugins {
 }
 
 selfReinforce {
+    // 全部可选，均有默认值：
+    // - inputApk  默认取 build/outputs/apk/release 最新 APK
+    // - outputApk 默认 inputApk 同目录 app-selfprotect.apk
+    // - 签名优先级：显式配置 > android signingConfigs(release) > ~/.android/debug.keystore
     inputApk.set(layout.buildDirectory.file("outputs/apk/release/app-release.apk"))
     outputApk.set(layout.buildDirectory.file("outputs/apk/release/app-selfprotect.apk"))
-    storeFile.set(file("xxx.keystore"))
-    storePassword.set("...")
-    keyAlias.set("...")
-    keyPassword.set("...")
     encryptedAssets.addAll(listOf("maps/", "config.json")) // 可选
+
+    // 多渠道（可选）：配置 + txt 文件
+    channels.addAll(listOf("oppo", "xiaomi"))
+    channelFile.set(layout.projectDirectory.file("channels.txt"))
+
+    // 蒲公英上传（可选，配置 apiKey 即启用）
+    pgyerApiKey.set("你的蒲公英APIKey")
+    pgyerInstallPassword.set("123456")
+    pgyerUpdateDescription.set("自研加固 v1.0")
+
+    // 钉钉通知（可选，配置 webhook 即启用）
+    dingTalkWebhook.set("https://oapi.dingtalk.com/robot/send?access_token=xxx")
+    dingTalkSecret.set("SECxxx")   // 可选加签
+    dingTalkKeyword.set("维汉翻译")
 }
 ```
 

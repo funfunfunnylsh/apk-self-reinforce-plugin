@@ -39,12 +39,27 @@ fun main(args: Array<String>) {
         ?: emptyList()
     val channels = props["channels"]?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() } ?: emptyList()
     val channelOutputDir = props["channelOutputDir"]?.let(::File)
+    val channelFile = props["channelsFile"]?.let(::File)
+    val pgyer = props["pgyerApiKey"]?.takeIf { it.isNotBlank() }?.let {
+        com.cdtec.selfreinforce.core.PgyerUploader.Config(
+            apiKey = it,
+            installType = props["pgyerInstallType"]?.takeIf(String::isNotBlank) ?: "2",
+            installPassword = props["pgyerInstallPassword"] ?: "",
+            updateDescription = props["pgyerUpdateDescription"] ?: ""
+        )
+    }
+    val dingTalkWebhook = props["dingTalkWebhook"]?.takeIf { it.isNotBlank() }
 
     ReinforcePipeline.run(
         ReinforcePipeline.Config(
             inputApk = input, outputApk = output, sdkDir = sdk,
             signing = signing, encryptedAssets = encryptedAssets,
-            channels = channels, channelOutputDir = channelOutputDir
+            channels = channels, channelFile = channelFile, channelOutputDir = channelOutputDir,
+            pgyer = pgyer,
+            pgyerUploadAllChannels = props["pgyerUploadAllChannels"]?.toBoolean() ?: false,
+            dingTalkWebhook = dingTalkWebhook,
+            dingTalkSecret = props["dingTalkSecret"]?.takeIf { it.isNotBlank() },
+            dingTalkKeyword = props["dingTalkKeyword"]?.takeIf { it.isNotBlank() } ?: "Android"
         )
     )
 }

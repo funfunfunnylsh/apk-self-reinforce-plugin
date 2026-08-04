@@ -40,7 +40,15 @@ abstract class SelfReinforceTask : DefaultTask() {
         // ===== 4. 签名解析：显式配置 > android signingConfigs(release) > debug keystore =====
         val signing = resolveSigning(project, ext)
 
-        // ===== 5. 加固流水线（含可选多渠道）=====
+        // ===== 5. 加固流水线（含多渠道 / 蒲公英 / 钉钉）=====
+        val pgyerConfig = ext.pgyerApiKey.orNull?.takeIf { it.isNotBlank() }?.let {
+            com.cdtec.selfreinforce.core.PgyerUploader.Config(
+                apiKey = it,
+                installType = ext.pgyerInstallType.orNull?.takeIf(String::isNotBlank) ?: "2",
+                installPassword = ext.pgyerInstallPassword.orNull ?: "",
+                updateDescription = ext.pgyerUpdateDescription.orNull ?: ""
+            )
+        }
         ReinforcePipeline.run(
             ReinforcePipeline.Config(
                 inputApk = input,
@@ -49,7 +57,13 @@ abstract class SelfReinforceTask : DefaultTask() {
                 signing = signing,
                 encryptedAssets = ext.encryptedAssets.toList(),
                 channels = ext.channels.toList(),
+                channelFile = ext.channelFile.orNull?.asFile,
                 channelOutputDir = ext.channelOutputDir.orNull?.asFile,
+                pgyer = pgyerConfig,
+                pgyerUploadAllChannels = ext.pgyerUploadAllChannels.getOrElse(false),
+                dingTalkWebhook = ext.dingTalkWebhook.orNull?.takeIf { it.isNotBlank() },
+                dingTalkSecret = ext.dingTalkSecret.orNull?.takeIf { it.isNotBlank() },
+                dingTalkKeyword = ext.dingTalkKeyword.orNull?.takeIf { it.isNotBlank() } ?: "Android",
                 workDir = File(project.buildDir, "self-reinforce")
             )
         ) { logger.lifecycle(it) }
