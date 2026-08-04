@@ -93,6 +93,26 @@ sh gradlew :selfReinforceCli \
 | `dingTalkKeyword` | 可选 | 通知标题关键字（默认 Android） |
 | `sdkDir` | 可选 | Android SDK 路径，默认自动探测 |
 
+### 运行时读取渠道（App 内直接调用）
+
+插件会在打包阶段自动生成 `ChannelReader` 源码（`build/generated/selfprotect/java`）并加入
+app 的 main sourceSets，**无需任何额外依赖**，业务代码直接调用：
+
+```kotlin
+// Kotlin
+val channel = com.selfprotect.reinforce.ChannelReader.getChannel(this)
+```
+
+```java
+// Java
+String channel = com.selfprotect.reinforce.ChannelReader.getChannel(this); // Context
+String channel = com.selfprotect.reinforce.ChannelReader.getChannel(apkPath); // 纯 Java
+```
+
+- 渠道来源于 APK v2 Signing Block 的 `0x71777777` 条目（walle 兼容），读取自身 APK 文件，无网络、无反射、无额外权限
+- 未写入渠道（未配置多渠道）时返回 `null`，业务侧判空即可
+- 与 [walle](https://github.com/Meituan-Dianping/walle) 的 `WalleChannelReader` 读取同一数据格式，互操作
+
 ### 方式二：接入业务 app 模块
 
 ```kotlin

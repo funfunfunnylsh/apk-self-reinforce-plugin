@@ -102,5 +102,38 @@ class SelfReinforcePlugin : Plugin<Project> {
                 project.logger.lifecycle("[self-reinforce] hookToAssembleRelease=true：assembleRelease 完成后自动执行 selfReinforceApk")
             }
         }
+
+        // 向 Android app 注入渠道读取类（ChannelReader），业务代码直接调用读取多渠道信息
+        injectChannelReader(project)
+    }
+
+    /**
+     * 生成 ChannelReader.java 到 build/generated/selfprotect/java 并加入 android main sourceSets。
+     * 业务代码即可直接使用：ChannelReader.getChannel(context)
+     */
+    private fun injectChannelReader(project: Project) {
+        val outDir = project.layout.buildDirectory.dir("generated/selfprotect/java")
+        val genTask = project.tasks.register("generateSelfProtectChannelReader") {
+            group = "reinforce"
+            description = "生成 ChannelReader.java（运行时读取多渠道信息）"
+            outputs.dir(outDir)
+            doLast {
+                val src = javaClass.getResourceAsStream("/channel/ChannelReader.java")
+                    ?: throw IllegalStateException("插件资源缺少 channel/ChannelReader.java")
+                val target = File(outDir.get().asFile, "com/selfprotect/reinforce/ChannelReader.java")
+                target.parentFile.mkdirs()
+                src.use { target.writeBytes(it.readBytes()) }
+            }
+        }
+        project.afterEvaluate {
+            val androidExt = project.extensions.findByName("android")
+            if (androidExt is com.android.build.api.dsl.ApplicationExtension) {
+                androidExt.sourceSets.getByName("main").java.srcDir(outDir)
+                project.tasks.matching { it.name == "preBuild" }.configureEach {
+                    dependsOn(genTask)
+                }
+                project.logger.lifecycle("[self-reinforce] 已注入渠道读取类：com.selfprotect.reinforce.ChannelReader")
+            }
+        }
     }
 }
