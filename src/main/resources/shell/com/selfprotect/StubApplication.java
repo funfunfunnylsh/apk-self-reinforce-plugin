@@ -451,40 +451,115 @@ public class StubApplication extends Application {
 
     /**
      * 创建内存 ClassLoader 并替换 LoadedApk.mClassLoader，parent 设为原 ClassLoader：
-     *  - API 26+：InMemoryDexClassLoader（零落盘）
+     *  - API 26+：优先 InMemoryDexClassLoader（零落盘）；构造失败回退 DexClassLoader 落盘临时文件
      *  - API < 26：native memfd_create + DexClassLoader("/proc/self/fd/N")（匿名内存，不落盘）
+     * 替换后同步 mBoundApplication.info（防 Activity 侧 LoadedApk 与 context 侧不同实例）。
      */
     private static ClassLoader installClassLoaderInMemory(Context base, byte[] zipBytes) throws Exception {
         ClassLoader oldLoader = base.getClassLoader();
-        ClassLoader newLoader;
+        ClassLoader newLoader = null;
+        Exception inMemoryError = null;
+
         if (Build.VERSION.SDK_INT >= 26) {
-            ByteBuffer[] dexs = extractDexBuffers(zipBytes);
-            if (dexs.length == 0) {
-                throw new IllegalStateException("payload 内未找到 classes*.dex");
+            try {
+                ByteBuffer[] dexs = extractDexBuffers(zipBytes);
+                if (dexs.length == 0) {
+                    throw new IllegalStateException("payload 内未找到 classes*.dex");
+                }
+                newLoader = new InMemoryDexClassLoader(dexs, oldLoader);
+                Log.i(TAG, "InMemoryDexClassLoader created, dex count=" + dexs.length);
+            } catch (Throwable t) {
+                inMemoryError = (t instanceof Exception) ? (Exception) t : new RuntimeException(t);
+                newLoader = null;
+                Log.w(TAG, "InMemoryDexClassLoader failed: " + t);
             }
-            newLoader = new InMemoryDexClassLoader(dexs, oldLoader);
-        } else {
-            int fd = ShellNative.isLoaded() ? ShellNative.createMemfd("payload.zip", zipBytes) : -1;
-            if (fd < 0) {
-                throw new IllegalStateException("memfd 创建失败（API<26 且 native 不可用）");
-            }
-            File odexDir = new File(base.getFilesDir(), WORK_DIR + "/odex");
-            if (!odexDir.exists()) {
-                odexDir.mkdirs();
-            }
-            newLoader = new DexClassLoader(
-                    "/proc/self/fd/" + fd,
-                    odexDir.getAbsolutePath(),
-                    buildLibrarySearchPath(base, oldLoader),
-                    oldLoader);
         }
 
+        if (newLoader == null) {
+            // 回退 1：memfd（API<26 或 native 可用时）
+            if (ShellNative.isLoaded()) {
+                int fd = ShellNative.createMemfd("payload.zip", zipBytes);
+                if (fd >= 0) {
+                    try {
+                        File odexDir = new File(base.getFilesDir(), WORK_DIR + "/odex");
+                        if (!odexDir.exists()) {
+                            odexDir.mkdirs();
+                        }
+                        newLoader = new DexClassLoader(
+                                "/proc/self/fd/" + fd,
+                                odexDir.getAbsolutePath(),
+                                buildLibrarySearchPath(base, oldLoader),
+                                oldLoader);
+                        Log.i(TAG, "memfd DexClassLoader created, fd=" + fd);
+                    } catch (Throwable t) {
+                        Log.w(TAG, "memfd DexClassLoader failed: " + t);
+                        newLoader = null;
+                    }
+                }
+            }
+            // 回退 2：落盘临时文件（保证可用性优先，加载后保留便于诊断）
+            if (newLoader == null) {
+                File dir = new File(base.getFilesDir(), WORK_DIR);
+                if (!dir.exists() && !dir.mkdirs()) {
+                    throw new IllegalStateException("无法创建工作目录: " + dir);
+                }
+                File zip = new File(dir, "payload.zip");
+                java.io.FileOutputStream fos = new java.io.FileOutputStream(zip);
+                try {
+                    fos.write(zipBytes);
+                } finally {
+                    fos.close();
+                }
+                File odexDir = new File(dir, "odex");
+                if (!odexDir.exists()) {
+                    odexDir.mkdirs();
+                }
+                newLoader = new DexClassLoader(
+                        zip.getAbsolutePath(),
+                        odexDir.getAbsolutePath(),
+                        buildLibrarySearchPath(base, oldLoader),
+                        oldLoader);
+                Log.w(TAG, "fallback DexClassLoader (payload 落盘): " + zip);
+            }
+        }
+
+        // 替换 LoadedApk.mClassLoader（context 侧）
         Object loadedApk = findField(base, "mPackageInfo").get(base);
         if (loadedApk == null) {
             throw new IllegalStateException("LoadedApk 为空，无法替换 ClassLoader");
         }
         Field classLoaderField = findField(loadedApk, "mClassLoader");
         classLoaderField.set(loadedApk, newLoader);
+        Log.i(TAG, "LoadedApk.mClassLoader replaced -> " + newLoader.getClass().getName());
+
+        // 双保险：同步 ActivityThread.mBoundApplication.info（若与 context 侧 LoadedApk 不同实例）
+        try {
+            Class<?> atClass = Class.forName("android.app.ActivityThread");
+            Method current = atClass.getDeclaredMethod("currentActivityThread");
+            current.setAccessible(true);
+            Object at = current.invoke(null);
+            if (at != null) {
+                Object bound = findField(at, "mBoundApplication").get(at);
+                if (bound != null) {
+                    Object boundInfo = findField(bound, "info").get(bound);
+                    if (boundInfo != null && boundInfo != loadedApk) {
+                        findField(boundInfo, "mClassLoader").set(boundInfo, newLoader);
+                        Log.w(TAG, "mBoundApplication.info.mClassLoader also replaced (different LoadedApk)");
+                    }
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+
+        // 自检：反射读取 newLoader 的 dexElements 数量，确认 payload dex 已挂载
+        try {
+            Object pathList = findField(newLoader, "pathList").get(newLoader);
+            Object elements = findField(pathList, "dexElements").get(pathList);
+            int count = (elements instanceof Object[]) ? ((Object[]) elements).length : -1;
+            Log.i(TAG, "newLoader dexElements count=" + count);
+        } catch (Throwable t) {
+            Log.w(TAG, "newLoader self-check failed: " + t);
+        }
         return newLoader;
     }
 
