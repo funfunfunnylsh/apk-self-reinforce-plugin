@@ -3,16 +3,24 @@ package com.selfprotect;
 import android.app.Application;
 import android.content.Context;
 import android.content.pm.ApplicationInfo;
+import android.os.Build;
 import android.os.Process;
 import android.util.Log;
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
+import java.util.List;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
 
 import dalvik.system.DexClassLoader;
+import dalvik.system.InMemoryDexClassLoader;
 
 /**
  * 自研加固壳 Application（对应百度加固的 com.sagittarius.v6.StubApplication）。
@@ -45,11 +53,23 @@ public class StubApplication extends Application {
         try {
             Log.i(TAG, "attachBaseContext enter, pkg=" + base.getPackageName());
 
-            // ===== 安全校验：基础反调试 + 防重打包 + 反动态注入 + 载荷完整性 =====
-            String debugInfo = detectDebugging(base);
-            if (debugInfo != null) {
-                Log.w(TAG, "anti-debug triggered: " + debugInfo);
+            // ===== native 安全初始化（反调试 + 反模拟器 + 反 root，尽早执行）=====
+            boolean nativeOk = ShellNative.load();
+            if (nativeOk) {
+                int sec = ShellNative.init(
+                        ShellNative.FLAG_ANTI_DEBUG | ShellNative.FLAG_ANTI_EMULATOR | ShellNative.FLAG_ANTI_ROOT);
+                if (sec != 0) {
+                    Log.w(TAG, "native security triggered: code=" + sec);
+                    Process.killProcess(Process.myPid());
+                    return;
+                }
+                Log.i(TAG, "native security check passed");
+            } else {
+                // native 库不可用（理论不出现）：降级到 Java 层检测
+                Log.w(TAG, "native lib unavailable, fallback to java checks");
             }
+
+            // ===== Java 层安全校验：防重打包 + 反动态注入 + 载荷完整性 =====
             String hookInfo = detectDynamicHooks(base);
             if (hookInfo != null) {
                 Log.w(TAG, "anti-hook triggered: " + hookInfo);
@@ -62,7 +82,7 @@ public class StubApplication extends Application {
             if (payloadInfo != null) {
                 Log.w(TAG, "payload integrity triggered: " + payloadInfo);
             }
-            if (debugInfo != null || hookInfo != null || sigInfo != null || payloadInfo != null) {
+            if (hookInfo != null || sigInfo != null || payloadInfo != null) {
                 Log.w(TAG, "security check failed -> kill process");
                 Process.killProcess(Process.myPid());
                 return;
@@ -76,10 +96,11 @@ public class StubApplication extends Application {
             String realAppName = readConfig(base);
             Log.i(TAG, "real application class: " + realAppName);
 
-            File payloadZip = decryptPayload(base);
-            Log.i(TAG, "payload.zip size=" + payloadZip.length());
+            // 解密 payload（native 内存解密，不落盘）
+            byte[] payloadZip = decryptPayloadInMemory(base);
+            Log.i(TAG, "payload.zip size=" + payloadZip.length);
 
-            ClassLoader newLoader = installClassLoader(base, payloadZip);
+            ClassLoader newLoader = installClassLoaderInMemory(base, payloadZip);
             Log.i(TAG, "class loader installed, parent="
                     + (newLoader.getParent() == null ? "null" : newLoader.getParent().getClass().getName()));
 
@@ -317,6 +338,16 @@ public class StubApplication extends Application {
     }
 
     private static byte[] sha256Bytes(byte[] data) {
+        // native SHA-256 优先（避免 Java MessageDigest 被 hook 干扰）
+        if (ShellNative.isLoaded()) {
+            try {
+                byte[] nativeHash = ShellNative.sha256(data);
+                if (nativeHash != null && nativeHash.length == 32) {
+                    return nativeHash;
+                }
+            } catch (Throwable ignored) {
+            }
+        }
         try {
             return java.security.MessageDigest.getInstance("SHA-256").digest(data);
         } catch (Throwable t) {
@@ -349,47 +380,104 @@ public class StubApplication extends Application {
         return new String(ShellCrypto.readAll(base.getAssets().open(CONFIG_ASSET)), "UTF-8").trim();
     }
 
-    /** 解密 payload.dat -> 私有目录 payload.zip（临时文件 + rename，避免残留半包） */
-    private static File decryptPayload(Context base) throws Exception {
+    /**
+     * native 内存解密 payload.dat -> zip 字节（不落盘）。
+     * native 失败时回退 Java 解密（兼容旧包/密钥不一致场景，便于诊断）。
+     */
+    private static byte[] decryptPayloadInMemory(Context base) throws Exception {
         byte[] encrypted = ShellCrypto.readAll(base.getAssets().open(PAYLOAD_ASSET));
-        byte[] plain = ShellCrypto.decrypt(encrypted);
-
-        File dir = new File(base.getFilesDir(), WORK_DIR);
-        if (!dir.exists() && !dir.mkdirs()) {
-            throw new IllegalStateException("无法创建工作目录: " + dir);
-        }
-        File tmp = new File(dir, "payload.zip.tmp");
-        File zip = new File(dir, "payload.zip");
-        FileOutputStream fos = new FileOutputStream(tmp);
-        try {
-            fos.write(plain);
-        } finally {
-            fos.close();
-        }
-        if (!tmp.renameTo(zip)) {
-            zip.delete();
-            if (!tmp.renameTo(zip)) {
-                throw new IllegalStateException("payload 落盘失败: " + zip);
+        if (ShellNative.isLoaded()) {
+            byte[] plain = ShellNative.decryptPayload(encrypted);
+            if (plain != null) {
+                return plain;
             }
+            Log.w(TAG, "native decrypt failed, fallback to java");
         }
-        return zip;
+        return ShellCrypto.decrypt(encrypted);
     }
 
     /**
-     * 创建 DexClassLoader 并替换 LoadedApk.mClassLoader。
-     * parent 设为原 ClassLoader：双亲委派保证壳类/框架类仍然可见，应用类从新 dex 加载。
+     * 从 payload zip 字节中提取全部 classes*.dex 为 direct ByteBuffer（数字序，供 InMemoryDexClassLoader）。
      */
-    private static ClassLoader installClassLoader(Context base, File payloadZip) throws Exception {
-        ClassLoader oldLoader = base.getClassLoader();
-        File odexDir = new File(base.getFilesDir(), WORK_DIR + "/odex");
-        if (!odexDir.exists()) {
-            odexDir.mkdirs();
+    private static ByteBuffer[] extractDexBuffers(byte[] zipBytes) throws Exception {
+        List<int[]> order = new ArrayList<int[]>();
+        List<ByteBuffer> bufs = new ArrayList<ByteBuffer>();
+        ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(zipBytes));
+        ZipEntry entry;
+        while ((entry = zis.getNextEntry()) != null) {
+            String name = entry.getName();
+            if (!entry.isDirectory() && name.matches("classes\\d*\\.dex")) {
+                ByteArrayOutputStream bos = new ByteArrayOutputStream();
+                byte[] buf = new byte[8192];
+                int n;
+                while ((n = zis.read(buf)) != -1) {
+                    bos.write(buf, 0, n);
+                }
+                byte[] dex = bos.toByteArray();
+                ByteBuffer bb = ByteBuffer.allocateDirect(dex.length);
+                bb.put(dex);
+                bb.rewind();
+                order.add(new int[]{dexIndex(name), bufs.size()});
+                bufs.add(bb);
+            }
+            zis.closeEntry();
         }
-        DexClassLoader newLoader = new DexClassLoader(
-                payloadZip.getAbsolutePath(),
-                odexDir.getAbsolutePath(),
-                buildLibrarySearchPath(base, oldLoader),
-                oldLoader);
+        zis.close();
+        // 按 dex 数字序排序（classes.dex=0, classes2.dex=2 ...）
+        ByteBuffer[] sorted = new ByteBuffer[bufs.size()];
+        int[] idx = new int[bufs.size()];
+        for (int i = 0; i < order.size(); i++) {
+            idx[i] = order.get(i)[0];
+        }
+        // 选择排序（数量少，简单可靠）
+        boolean[] used = new boolean[bufs.size()];
+        for (int k = 0; k < bufs.size(); k++) {
+            int best = -1;
+            for (int i = 0; i < bufs.size(); i++) {
+                if (!used[i] && (best < 0 || idx[i] < idx[best])) {
+                    best = i;
+                }
+            }
+            sorted[k] = bufs.get(best);
+            used[best] = true;
+        }
+        return sorted;
+    }
+
+    private static int dexIndex(String name) {
+        String n = name.substring(0, name.length() - 4).replace("classes", "");
+        return n.isEmpty() ? 0 : Integer.parseInt(n);
+    }
+
+    /**
+     * 创建内存 ClassLoader 并替换 LoadedApk.mClassLoader，parent 设为原 ClassLoader：
+     *  - API 26+：InMemoryDexClassLoader（零落盘）
+     *  - API < 26：native memfd_create + DexClassLoader("/proc/self/fd/N")（匿名内存，不落盘）
+     */
+    private static ClassLoader installClassLoaderInMemory(Context base, byte[] zipBytes) throws Exception {
+        ClassLoader oldLoader = base.getClassLoader();
+        ClassLoader newLoader;
+        if (Build.VERSION.SDK_INT >= 26) {
+            ByteBuffer[] dexs = extractDexBuffers(zipBytes);
+            if (dexs.length == 0) {
+                throw new IllegalStateException("payload 内未找到 classes*.dex");
+            }
+            newLoader = new InMemoryDexClassLoader(dexs, oldLoader);
+        } else {
+            int fd = ShellNative.isLoaded() ? ShellNative.createMemfd("payload.zip", zipBytes) : -1;
+            if (fd < 0) {
+                throw new IllegalStateException("memfd 创建失败（API<26 且 native 不可用）");
+            }
+            File odexDir = new File(base.getFilesDir(), WORK_DIR + "/odex");
+            if (!odexDir.exists()) {
+                odexDir.mkdirs();
+            }
+            newLoader = new DexClassLoader(
+                    "/proc/self/fd/" + fd,
+                    odexDir.getAbsolutePath(),
+                    buildLibrarySearchPath(base, oldLoader),
+                    oldLoader);
+        }
 
         Object loadedApk = findField(base, "mPackageInfo").get(base);
         if (loadedApk == null) {

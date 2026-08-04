@@ -32,6 +32,14 @@ object ReinforcePipeline {
         val shellDex = ShellDexBuilder.buildShellDex(config.sdkDir, config.workDir)
         log("      壳 classes.dex：${shellDex.size} 字节")
 
+        log("[1.5/4] 编译壳 native 库（NDK clang，arm64-v8a + armeabi-v7a）...")
+        val nativeLibs = try {
+            NativeBuilder.buildNative(config.sdkDir, config.workDir, log)
+        } catch (e: Exception) {
+            log("      native 编译失败（${e.message}），跳过 so 注入，壳降级为 Java 层检测")
+            emptyMap()
+        }
+
         // 防重打包：提取输入 APK 签名证书 SHA-256（重签用同一 keystore，指纹一致；未配置签名则不预置）
         val expectedSignature = if (config.signing != null) {
             val sig = extractSignatureSha256(config.inputApk, config.sdkDir)
@@ -47,7 +55,8 @@ object ReinforcePipeline {
         val realApp = ApkReinforcer.reinforce(
             config.inputApk, unsigned, shellDex,
             expectedSignatureHex = expectedSignature,
-            encryptedAssets = config.encryptedAssets
+            encryptedAssets = config.encryptedAssets,
+            nativeLibs = nativeLibs
         )
         log("      原 Application：$realApp（已写入 ${ApkReinforcer.CONFIG_PATH}）")
         if (config.encryptedAssets.isNotEmpty()) {

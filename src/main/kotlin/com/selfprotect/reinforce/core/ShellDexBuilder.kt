@@ -15,6 +15,7 @@ object ShellDexBuilder {
     private val SHELL_SOURCES = listOf(
         "shell/com/selfprotect/StubApplication.java",
         "shell/com/selfprotect/ShellCrypto.java",
+        "shell/com/selfprotect/ShellNative.java",
         "shell/com/selfprotect/SecureAssets.java"
     )
 

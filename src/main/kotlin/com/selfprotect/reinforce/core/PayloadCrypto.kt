@@ -16,12 +16,13 @@ import javax.crypto.spec.SecretKeySpec
  */
 object PayloadCrypto {
 
-    private val KEY_PART = byteArrayOf(
+    /** 密钥分段（与壳 Java ShellCrypto / native key.h 同步；internal 供 NativeBuilder 生成 key.h） */
+    internal val KEY_PART = byteArrayOf(
         0x3D, 0x51, 0x7A, 0x0E, 0x62, 0x48, 0xC3.toByte(), 0x27,
         0x9B.toByte(), 0x05, 0xE8.toByte(), 0x74, 0x1F, 0xAD.toByte(), 0x56, 0x09
     )
 
-    private val KEY_MASK = byteArrayOf(
+    internal val KEY_MASK = byteArrayOf(
         0x59, 0x22, 0x1C, 0x6B, 0x03, 0x2E, 0xA7.toByte(), 0x45,
         (0xF0).toByte(), 0x6A, (0x84).toByte(), 0x10, 0x7C, (0xD8).toByte(), 0x31, 0x65
     )

@@ -59,6 +59,7 @@ object ApkReinforcer {
      * @param expectedSignatureHex 输入 APK 签名证书 SHA-256（hex），写入壳内做防重打包校验；null 表示不预置
      * @param encryptedAssets 需要加密的 assets 路径规则（前缀/精确匹配），如 "private/"、"config.bin"；
      *                        为空表示不加密任何 assets
+     * @param nativeLibs Map<abi, so 文件>（如 arm64-v8a -> libselfprotect.so），注入 APK 的 lib/<abi>/ 下
      * @return 原 Application 全限定名
      */
     fun reinforce(
@@ -66,7 +67,8 @@ object ApkReinforcer {
         outputApk: File,
         shellDex: ByteArray,
         expectedSignatureHex: String? = null,
-        encryptedAssets: List<String> = emptyList()
+        encryptedAssets: List<String> = emptyList(),
+        nativeLibs: Map<String, File> = emptyMap()
     ): String {
         require(inputApk.exists()) { "输入 APK 不存在：$inputApk" }
 
@@ -150,6 +152,11 @@ object ApkReinforcer {
                 writeEntry(out, PAYLOAD_HASH_PATH, payloadHashMasked, ZipEntry.DEFLATED)
                 if (assetsMapLines.isNotEmpty()) {
                     writeEntry(out, ASSETS_MAP_PATH, assetsMapLines.joinToString("\n").toByteArray(Charsets.UTF_8), ZipEntry.DEFLATED)
+                }
+
+                // 4.6 注入壳 native 库 lib/<abi>/libselfprotect.so（STORE：so 需 16KB 页对齐，不压缩）
+                nativeLibs.forEach { (abi, soFile) ->
+                    writeEntry(out, "lib/$abi/libselfprotect.so", soFile.readBytes(), ZipEntry.STORED)
                 }
             }
             return appName
