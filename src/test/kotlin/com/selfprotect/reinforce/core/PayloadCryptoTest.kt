@@ -1,4 +1,4 @@
-package com.cdtec.selfreinforce.core
+package com.selfprotect.reinforce.core
 
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals

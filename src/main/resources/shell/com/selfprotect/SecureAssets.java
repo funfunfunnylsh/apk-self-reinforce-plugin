@@ -18,7 +18,7 @@ import java.util.Map;
  * 并生成清单 assets/selfprotect/assets_map.txt（每行：加密路径|原始路径）。
  *
  * 业务侧用法：
- *    InputStream in = SecureAssets.open(context, "maps/city.dat");
+ *    InputStream in = SecureAssets.open(context, "private/data.bin");
  * 未加密的文件原样走 AssetManager，加密文件首次访问时解密到
  * filesDir/selfprotect/assets/<path> 后返回文件流。
  */
@@ -60,7 +60,7 @@ public final class SecureAssets {
 
     /**
      * 打开资源：优先透明解密，未加密直接走 AssetManager。
-     * @param assetPath 原始 assets 路径，如 "maps/city.dat"
+     * @param assetPath 原始 assets 路径，如 "private/data.bin"
      */
     public static InputStream open(Context context, String assetPath) throws IOException {
         Map<String, String> map = sEncMap;

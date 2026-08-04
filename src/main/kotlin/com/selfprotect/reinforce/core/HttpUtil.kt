@@ -1,4 +1,4 @@
-package com.cdtec.selfreinforce.core
+package com.selfprotect.reinforce.core
 
 import java.io.ByteArrayOutputStream
 import java.io.File

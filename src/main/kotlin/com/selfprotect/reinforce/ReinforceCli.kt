@@ -1,7 +1,7 @@
-package com.cdtec.selfreinforce
+package com.selfprotect.reinforce
 
-import com.cdtec.selfreinforce.core.ReinforcePipeline
-import com.cdtec.selfreinforce.core.Signer
+import com.selfprotect.reinforce.core.ReinforcePipeline
+import com.selfprotect.reinforce.core.Signer
 import java.io.File
 import kotlin.system.exitProcess
 
@@ -11,7 +11,7 @@ import kotlin.system.exitProcess
  * ./gradlew :selfReinforceCli \
  *   -PinputApk=/path/app.apk -PoutputApk=/path/out.apk \
  *   [-PsdkDir=/path/sdk] [-Pks=/path/ks -PksPass=xxx -Palias=xxx -PkeyPass=xxx] \
- *   [-PencryptedAssets=maps/,config.json] \
+ *   [-PencryptedAssets=private/,config.bin] \
  *   [-Pchannels=oppo,xiaomi] [-PchannelOutputDir=/path/channels]
  */
 fun main(args: Array<String>) {
@@ -41,7 +41,7 @@ fun main(args: Array<String>) {
     val channelOutputDir = props["channelOutputDir"]?.let(::File)
     val channelFile = props["channelsFile"]?.let(::File)
     val pgyer = props["pgyerApiKey"]?.takeIf { it.isNotBlank() }?.let {
-        com.cdtec.selfreinforce.core.PgyerUploader.Config(
+        com.selfprotect.reinforce.core.PgyerUploader.Config(
             apiKey = it,
             installType = props["pgyerInstallType"]?.takeIf(String::isNotBlank) ?: "2",
             installPassword = props["pgyerInstallPassword"] ?: "",

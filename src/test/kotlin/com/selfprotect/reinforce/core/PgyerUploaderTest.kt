@@ -1,4 +1,4 @@
-package com.cdtec.selfreinforce.core
+package com.selfprotect.reinforce.core
 
 import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpServer

@@ -1,7 +1,7 @@
-package com.cdtec.selfreinforce
+package com.selfprotect.reinforce
 
-import com.cdtec.selfreinforce.core.ReinforcePipeline
-import com.cdtec.selfreinforce.core.Signer
+import com.selfprotect.reinforce.core.ReinforcePipeline
+import com.selfprotect.reinforce.core.Signer
 import org.gradle.api.DefaultTask
 import org.gradle.api.tasks.Internal
 import org.gradle.api.tasks.TaskAction
@@ -42,7 +42,7 @@ abstract class SelfReinforceTask : DefaultTask() {
 
         // ===== 5. 加固流水线（含多渠道 / 蒲公英 / 钉钉）=====
         val pgyerConfig = ext.pgyerApiKey.orNull?.takeIf { it.isNotBlank() }?.let {
-            com.cdtec.selfreinforce.core.PgyerUploader.Config(
+            com.selfprotect.reinforce.core.PgyerUploader.Config(
                 apiKey = it,
                 installType = ext.pgyerInstallType.orNull?.takeIf(String::isNotBlank) ?: "2",
                 installPassword = ext.pgyerInstallPassword.orNull ?: "",

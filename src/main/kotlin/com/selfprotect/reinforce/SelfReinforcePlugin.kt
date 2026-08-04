@@ -1,4 +1,4 @@
-package com.cdtec.selfreinforce
+package com.selfprotect.reinforce
 
 import org.gradle.api.Plugin
 import org.gradle.api.Project
@@ -16,14 +16,14 @@ import java.io.File
  *
  * 用法（业务 app 模块中）：
  * ```
- * plugins { id("com.cdtec.plugin.apk-self-reinforce") }
+ * plugins { id("com.selfprotect.reinforce") }
  * selfReinforce {
  *     inputApk.set(...)            // 可选
  *     outputApk.set(...)           // 可选
  *     sdkDir.set("...")            // 可选，默认自动探测
  *     storeFile.set(file("xxx.keystore")); storePassword.set("...")  // 可选
  *     keyAlias.set("..."); keyPassword.set("...")                    // 可选
- *     encryptedAssets.add("maps/") // 可选：assets 加密规则
+ *     encryptedAssets.add("private/") // 可选：assets 加密规则
  *     channels.addAll(listOf("oppo", "xiaomi", "huawei"))  // 可选：多渠道
  *     channelOutputDir.set(...)    // 可选，默认 outputApk 同目录 channels/
  * }
@@ -39,7 +39,7 @@ abstract class SelfReinforceExtension(project: Project) {
     val keyAlias: Property<String> = project.objects.property(String::class.java)
     val keyPassword: Property<String> = project.objects.property(String::class.java)
 
-    /** 需要加密的 assets 路径规则（前缀/精确匹配，如 "maps/"、"config.json"），空则不加密 */
+    /** 需要加密的 assets 路径规则（前缀/精确匹配，如 "private/"、"config.bin"），空则不加密 */
     val encryptedAssets: MutableList<String> = mutableListOf()
 
     /** 多渠道列表（如 oppo/xiaomi/huawei），空则不产渠道包 */

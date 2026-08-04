@@ -1,4 +1,4 @@
-package com.cdtec.selfreinforce.core
+package com.selfprotect.reinforce.core
 
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
@@ -6,7 +6,7 @@ import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
 
 /**
- * 钉钉群机器人通知（参考 wh-trans-ios scripts/package.sh 的消息格式）。
+ * 钉钉群机器人通知（markdown 消息格式）。
  *
  * - 发送 markdown 消息到群机器人 webhook
  * - 可选「加签」安全设置：secret 存在时自动附加 timestamp/sign（钉钉官方 HMAC-SHA256 算法）

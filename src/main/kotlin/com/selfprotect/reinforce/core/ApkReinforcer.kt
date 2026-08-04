@@ -1,4 +1,4 @@
-package com.cdtec.selfreinforce.core
+package com.selfprotect.reinforce.core
 
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -57,7 +57,7 @@ object ApkReinforcer {
      * @param outputApk 输出未签名加固 APK
      * @param shellDex  壳 classes.dex 字节
      * @param expectedSignatureHex 输入 APK 签名证书 SHA-256（hex），写入壳内做防重打包校验；null 表示不预置
-     * @param encryptedAssets 需要加密的 assets 路径规则（前缀/精确匹配），如 "maps/"、"config.json"；
+     * @param encryptedAssets 需要加密的 assets 路径规则（前缀/精确匹配），如 "private/"、"config.bin"；
      *                        为空表示不加密任何 assets
      * @return 原 Application 全限定名
      */

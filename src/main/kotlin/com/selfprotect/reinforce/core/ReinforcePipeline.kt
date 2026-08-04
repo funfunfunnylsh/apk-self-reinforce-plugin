@@ -1,4 +1,4 @@
-package com.cdtec.selfreinforce.core
+package com.selfprotect.reinforce.core
 
 import java.io.File
 
@@ -121,7 +121,7 @@ object ReinforcePipeline {
         return results
     }
 
-    /** 钉钉 markdown 通知（参考 wh-trans-ios：标题/分支/版本/蒲公英下载与二维码/包体/变更） */
+    /** 钉钉 markdown 通知（标题/分支/版本/蒲公英下载与二维码/包体/变更） */
     private fun sendDingTalk(
         config: Config,
         channelApks: Map<String, File>,

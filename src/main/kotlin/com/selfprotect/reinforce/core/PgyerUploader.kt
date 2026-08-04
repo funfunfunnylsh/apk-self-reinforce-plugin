@@ -1,9 +1,9 @@
-package com.cdtec.selfreinforce.core
+package com.selfprotect.reinforce.core
 
 import java.io.File
 
 /**
- * 蒲公英（PGYER）上传器（参考 wh-trans-ios scripts/package.sh 的流程，改为直连 HTTP API，不依赖 Node CLI）：
+ * 蒲公英（PGYER）上传器（直连蒲公英官方 HTTP API，不依赖 Node CLI）：
  *
  *  1. 上传：POST https://www.pgyer.com/apiv2/app/upload （multipart：_api_key + file + 可选参数）
  *  2. 轮询：GET  https://www.pgyer.com/apiv2/app/buildInfo?_api_key=&buildKey=

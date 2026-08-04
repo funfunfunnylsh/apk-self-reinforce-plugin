@@ -26,8 +26,8 @@ dependencies {
 gradlePlugin {
     plugins {
         create("selfReinforcePlugin") {
-            id = "com.cdtec.plugin.apk-self-reinforce"
-            implementationClass = "com.cdtec.selfreinforce.SelfReinforcePlugin"
+            id = "com.selfprotect.reinforce"
+            implementationClass = "com.selfprotect.reinforce.SelfReinforcePlugin"
         }
     }
 }
@@ -36,7 +36,7 @@ gradlePlugin {
 // ./gradlew :apk-self-reinforce-plugin:selfReinforceCli -PinputApk=... -PoutputApk=... [-Pks=... -PksPass=... -Palias=... -PkeyPass=...]
 tasks.register<JavaExec>("selfReinforceCli") {
     group = "reinforce"
-    mainClass.set("com.cdtec.selfreinforce.ReinforceCliKt")
+    mainClass.set("com.selfprotect.reinforce.ReinforceCliKt")
     classpath = sourceSets["main"].runtimeClasspath
     val props = listOf(
         "inputApk", "outputApk", "sdkDir", "ks", "ksPass", "alias", "keyPass",
@@ -58,7 +58,7 @@ afterEvaluate {
                 from(components["java"])
                 // 与仓库名一致：JitPack 会重写 group 为 com.github.funfunfunnylsh，
                 // 用户坐标：com.github.funfunfunnylsh:apk-self-reinforce-plugin:v1.0.0
-                groupId = "com.cdtec.plugin"
+                groupId = "com.selfprotect.reinforce"
                 artifactId = "apk-self-reinforce-plugin"
                 version = "1.0.0"
                 artifact(tasks["sourceJar"])

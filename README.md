@@ -67,7 +67,7 @@ sh gradlew :selfReinforceCli \
   -PinputApk=/path/app-release.apk \
   -PoutputApk=/path/app-selfprotect.apk \
   -Pks=/path/keystore -PksPass=xxx -Palias=xxx -PkeyPass=xxx \
-  -PencryptedAssets=maps/,config.json \
+  -PencryptedAssets=private/,config.bin \
   -Pchannels=oppo,xiaomi -PchannelsFile=/path/channels.txt \
   -PpgyerApiKey=xxx -PdingTalkWebhook='https://oapi.dingtalk.com/robot/send?access_token=xxx'
 ```
@@ -104,7 +104,7 @@ pluginManagement {
 // app/build.gradle.kts
 plugins {
     id("com.android.application")
-    id("com.cdtec.plugin.apk-self-reinforce")
+    id("com.selfprotect.reinforce")
 }
 
 selfReinforce {
@@ -114,7 +114,7 @@ selfReinforce {
     // - 签名优先级：显式配置 > android signingConfigs(release) > ~/.android/debug.keystore
     inputApk.set(layout.buildDirectory.file("outputs/apk/release/app-release.apk"))
     outputApk.set(layout.buildDirectory.file("outputs/apk/release/app-selfprotect.apk"))
-    encryptedAssets.addAll(listOf("maps/", "config.json")) // 可选
+    encryptedAssets.addAll(listOf("private/", "config.bin")) // 可选
 
     // 多渠道（可选）：配置 + txt 文件
     channels.addAll(listOf("oppo", "xiaomi"))
@@ -128,7 +128,7 @@ selfReinforce {
     // 钉钉通知（可选，配置 webhook 即启用）
     dingTalkWebhook.set("https://oapi.dingtalk.com/robot/send?access_token=xxx")
     dingTalkSecret.set("SECxxx")   // 可选加签
-    dingTalkKeyword.set("维汉翻译")
+    dingTalkKeyword.set("DemoApp")
 }
 ```
 
@@ -152,7 +152,7 @@ buildscript {
 }
 
 // app/build.gradle.kts
-apply(plugin = "com.cdtec.plugin.apk-self-reinforce")
+apply(plugin = "com.selfprotect.reinforce")
 ```
 
 Groovy 写法：
@@ -163,7 +163,7 @@ buildscript {
     repositories { maven { url 'https://jitpack.io' } }
     dependencies { classpath 'com.github.funfunfunnylsh:apk-self-reinforce-plugin:v1.0.0' }
 }
-apply plugin: 'com.cdtec.plugin.apk-self-reinforce'
+apply plugin: 'com.selfprotect.reinforce'
 ```
 
 然后同样配置 `selfReinforce { ... }` 扩展即可。版本号对应 GitHub tag（当前 `v1.0.0`）。
@@ -171,9 +171,9 @@ apply plugin: 'com.cdtec.plugin.apk-self-reinforce'
 ### assets 资源加密的业务接入
 
 ```java
-// 原：context.getAssets().open("maps/city.dat")
+// 原：context.getAssets().open("private/data.bin")
 // 加密后必须走壳提供的透明解密 API：
-InputStream in = com.selfprotect.SecureAssets.open(context, "maps/city.dat");
+InputStream in = com.selfprotect.SecureAssets.open(context, "private/data.bin");
 ```
 
 > 注意：白名单外的 assets 不受影响（原样直读）；白名单内的路径必须走 `SecureAssets.open()`，否则 `AssetManager` 直开会 `FileNotFoundException`。
@@ -195,7 +195,7 @@ AES 密钥由 `KEY_PART xor KEY_MASK` 派生（两端各一份，必须同步修
 ```
 apk-self-reinforce-plugin/
 ├── build.gradle.kts                  # Gradle 插件定义 + CLI 任务
-├── src/main/kotlin/com/cdtec/selfreinforce/
+├── src/main/kotlin/com/selfprotect/reinforce/
 │   ├── SelfReinforcePlugin.kt        # 插件入口（selfReinforce 扩展）
 │   ├── SelfReinforceTask.kt          # Gradle Task
 │   ├── ReinforceCli.kt               # 命令行入口

@@ -1,11 +1,11 @@
-package com.cdtec.selfreinforce.core
+package com.selfprotect.reinforce.core
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * AxmlEditor 回归测试：用真实的二进制 AndroidManifest.xml 样本（取自 barmakMap release 包）
+ * AxmlEditor 回归测试：用 aapt2 生成的二进制 AndroidManifest.xml 样本
  * 验证入口替换 + 幂等性，防止 AXML 解析/字符串池重建回归。
  */
 class AxmlEditorTest {
@@ -18,9 +18,10 @@ class AxmlEditorTest {
 
     @Test
     fun `替换application入口并返回原值`() {
-        val (patched, oldName) = AxmlEditor.replaceApplicationName(sampleManifest(), "com.selfprotect.StubApplication")
-        assertEquals("com.barmark.navmap.FastApp", oldName)
-        assertTrue("输出应大于输入", patched.size >= 80_000)
+        val sample = sampleManifest()
+        val (patched, oldName) = AxmlEditor.replaceApplicationName(sample, "com.selfprotect.StubApplication")
+        assertEquals("com.example.demo.DemoApp", oldName)
+        assertTrue("替换结果应非空", patched.isNotEmpty())
         // 幂等：二次替换能再次解析并返回第一次替换的结果
         val (patched2, oldName2) = AxmlEditor.replaceApplicationName(patched, "com.selfprotect.StubApplication")
         assertEquals("com.selfprotect.StubApplication", oldName2)

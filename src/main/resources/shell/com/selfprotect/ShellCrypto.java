@@ -9,7 +9,7 @@ import javax.crypto.spec.SecretKeySpec;
 
 /**
  * 壳侧解密。算法与密钥混淆参数必须与打包侧
- * com.cdtec.selfreinforce.core.PayloadCrypto 完全一致：
+ * com.selfprotect.reinforce.core.PayloadCrypto 完全一致：
  * AES/CBC/PKCS5Padding，文件格式 [16 字节 IV][密文]，密钥 = KEY_PART xor KEY_MASK。
  */
 final class ShellCrypto {
