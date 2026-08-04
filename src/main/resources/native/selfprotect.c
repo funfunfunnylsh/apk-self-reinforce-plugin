@@ -75,6 +75,12 @@ static const volatile unsigned char s_magisk_dir[]   = {'/'^XC,'d'^XC,'a'^XC,'t'
 static const volatile unsigned char s_magisk_sbin[]  = {'/'^XC,'s'^XC,'b'^XC,'i'^XC,'n'^XC,'/'^XC,'.'^XC,'m'^XC,'a'^XC,'g'^XC,'i'^XC,'s'^XC,'k'^XC,0};
 static const volatile unsigned char s_mounts_path[]  = {'/'^XC,'p'^XC,'r'^XC,'o'^XC,'c'^XC,'/'^XC,'s'^XC,'e'^XC,'l'^XC,'f'^XC,'/'^XC,'m'^XC,'o'^XC,'u'^XC,'n'^XC,'t'^XC,'s'^XC,0};
 static const volatile unsigned char s_magisk[]       = {'m'^XC,'a'^XC,'g'^XC,'i'^XC,'s'^XC,'k'^XC,0};
+/* 调试器特征词（混淆存储） */
+static const volatile unsigned char s_dbg_gdb[]       = {'g'^XC,'d'^XC,'b'^XC,0};
+static const volatile unsigned char s_dbg_lldb[]      = {'l'^XC,'l'^XC,'d'^XC,'b'^XC,0};
+static const volatile unsigned char s_dbg_frida_srv[] = {'f'^XC,'r'^XC,'i'^XC,'d'^XC,'a'^XC,'-'^XC,'s'^XC,'e'^XC,'r'^XC,'v'^XC,'e'^XC,'r'^XC,0};
+static const volatile unsigned char s_dbg_ida[]       = {'i'^XC,'d'^XC,'a'^XC,0};
+static const volatile unsigned char s_dbg_jdb[]       = {'j'^XC,'d'^XC,'b'^XC,0};
 
 /* ---------------- 文件/属性辅助 ---------------- */
 
@@ -117,6 +123,63 @@ static int str_contains(const char *haystack, const char *needle) {
 }
 
 /* ---------------- 反调试 ---------------- */
+
+/* ---------------- 反调试 ---------------- */
+
+/* TRACEME 状态：0=未试 1=成功(TracerPid=zygote) 2=失败(已被 attach) */
+static volatile int g_traceme_state = 0;
+/* TRACEME 成功后的初始 TracerPid（zygote 等系统父进程） */
+static volatile int g_initial_tracer = 0;
+
+/* 读取 /proc/<pid>/cmdline 到 buf，返回长度；失败返回 -1 */
+static int read_cmdline(int pid, char *buf, size_t size) {
+    if (pid <= 0 || !buf || size == 0) return -1;
+    char path[48];
+    snprintf(path, sizeof(path), "/proc/%d/cmdline", pid);
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return -1;
+    ssize_t n = read(fd, buf, size - 1);
+    close(fd);
+    if (n <= 0) return -1;
+    buf[n] = 0;
+    /* cmdline 以 \0 分隔参数，取第一个（可执行名） */
+    for (ssize_t i = 0; i < n; i++) {
+        if (buf[i] == 0) { buf[i] = 0; break; }
+    }
+    return (int)n;
+}
+
+/*
+ * 判断 tracer 是否为系统进程（放行）。返回 1=系统 tracer（放行），0=可疑（应杀）。
+ * 策略：
+ *  - 明确调试器特征（gdb/lldb/frida-server 等，混淆存储）→ 杀
+ *  - 系统服务/厂商监控（oplus/sensorservice/surfaceflinger/zygote 等）→ 放行
+ *  - 其他未知 → 保守杀
+ */
+static int is_system_tracer(int pid) {
+    char cmd[128];
+    if (read_cmdline(pid, cmd, sizeof(cmd)) <= 0) {
+        return 0; /* 读不到按可疑 */
+    }
+    /* 明确调试器特征（混淆存储，防 strings） */
+    char pat[24];
+    obf_str(pat, s_dbg_gdb);      if (str_contains(cmd, pat)) return 0;
+    obf_str(pat, s_dbg_lldb);     if (str_contains(cmd, pat)) return 0;
+    obf_str(pat, s_dbg_frida_srv);if (str_contains(cmd, pat)) return 0;
+    obf_str(pat, s_dbg_ida);      if (str_contains(cmd, pat)) return 0;
+    obf_str(pat, s_dbg_jdb);      if (str_contains(cmd, pat)) return 0;
+    /* 系统服务/厂商监控白名单（非敏感，明文） */
+    static const char *whitelist[] = {
+        "oplus", "coloros", "sensorservice", "surfaceflinger", "system_server",
+        "zygote", "sensors", "audio", "media", "netd", "vold", "aod",
+        "android.process", "installd", "keystore", "servicemanager", "lmkd",
+        "traced", "statsd", "logd", "lmk", "dumpstate"
+    };
+    for (size_t i = 0; i < sizeof(whitelist) / sizeof(whitelist[0]); i++) {
+        if (str_contains(cmd, whitelist[i])) return 1;
+    }
+    return 0;
+}
 
 static int check_tracerpid(void) {
     char path[64];
@@ -177,25 +240,51 @@ static int check_frida_port(void) {
     return rc == 0;
 }
 
-/* 后台监控线程：TracerPid / hook maps / frida 端口，命中即静默退出 */
+/*
+ * 后台监控：hook maps / frida 端口 / TracerPid 增量。
+ * 关键修正：TRACEME 成功后 TracerPid 即为系统父进程（zygote 等），不能"非 0 即杀"；
+ * 只在 TracerPid 变成【非初始、非系统白名单】时才判定为调试器附加。
+ */
 static void *monitor_thread(void *arg) {
     (void)arg;
     while (1) {
         usleep(800 * 1000);
-        if (check_tracerpid() != 0) _exit(0);
         if (check_hook_maps()) _exit(0);
         if (check_frida_port()) _exit(0);
+        if (g_traceme_state == 1) {
+            int t = check_tracerpid();
+            if (t != 0 && t != g_initial_tracer && !is_system_tracer(t)) {
+                _exit(0);
+            }
+        }
+        /* g_traceme_state == 2（系统监控 attach）：不监控 TracerPid（系统持续 attach 属正常） */
     }
     return NULL;
 }
 
-/* 一次性反调试：ptrace TRACEME + TracerPid + maps + 端口。返回 0 通过，非 0 命中原因码 */
+/*
+ * 一次性反调试（带 ColorOS/OPlus 系统监控白名单）：
+ *  - TRACEME 失败（已被 attach）：读 tracer cmdline，系统白名单放行，明确调试器特征杀
+ *  - TRACEME 成功：记录初始 TracerPid（zygote），不立即杀
+ *  - hook maps / frida 端口：保持杀（明确攻击特征）
+ * 返回 0 通过，非 0 命中原因码
+ */
 static int anti_debug_once(void) {
-    /* TRACEME 自附加：成功后本进程无法再被其他调试器附加；失败说明已被附加 */
     if (ptrace(PTRACE_TRACEME, 0, NULL, NULL) == -1) {
-        return 1;
+        int tracer = check_tracerpid();
+        if (tracer != 0) {
+            if (is_system_tracer(tracer)) {
+                g_traceme_state = 2; /* 系统监控：放行 */
+            } else {
+                return 1; /* 可疑调试器 */
+            }
+        } else {
+            g_traceme_state = 2; /* 读不到 tracer，保守放行 */
+        }
+    } else {
+        g_traceme_state = 1;
+        g_initial_tracer = check_tracerpid(); /* zygote 等系统父进程 */
     }
-    if (check_tracerpid() != 0) return 2;
     if (check_hook_maps()) return 4;
     if (check_frida_port()) return 8;
     return 0;
