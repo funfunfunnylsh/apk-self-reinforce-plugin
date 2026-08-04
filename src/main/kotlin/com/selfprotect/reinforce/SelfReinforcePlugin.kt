@@ -26,9 +26,12 @@ import java.io.File
  *     encryptedAssets.add("private/") // 可选：assets 加密规则
  *     channels.addAll(listOf("oppo", "xiaomi", "huawei"))  // 可选：多渠道
  *     channelOutputDir.set(...)    // 可选，默认 outputApk 同目录 channels/
+ *     hookToAssembleRelease.set(true)  // 可选：assembleRelease 跑完自动加固
  * }
  * ```
- * 执行：./gradlew selfReinforceApk
+ * 执行（一条命令，自动先打 release 包再加固+重签）：
+ *   ./gradlew :app:selfReinforceApk
+ * 若开启 hookToAssembleRelease，则 ./gradlew :app:assembleRelease 也会自动追加加固。
  */
 abstract class SelfReinforceExtension(project: Project) {
     val inputApk = project.objects.fileProperty()
@@ -65,6 +68,12 @@ abstract class SelfReinforceExtension(project: Project) {
     val dingTalkSecret: Property<String> = project.objects.property(String::class.java)
     /** 消息标题关键字（钉钉机器人安全设置的关键字，用于构建消息标题） */
     val dingTalkKeyword: Property<String> = project.objects.property(String::class.java)
+
+    // ===== 打包阶段集成 =====
+    /** true（默认）：selfReinforceApk 自动依赖 assembleRelease，一条命令完成 打包+加固+重签 */
+    val autoBuildRelease: Property<Boolean> = project.objects.property(Boolean::class.java)
+    /** true：把加固 hook 到 assembleRelease 末尾，直接跑 assembleRelease 也会自动加固（默认 false） */
+    val hookToAssembleRelease: Property<Boolean> = project.objects.property(Boolean::class.java)
 }
 
 class SelfReinforcePlugin : Plugin<Project> {
@@ -73,9 +82,25 @@ class SelfReinforcePlugin : Plugin<Project> {
         val provider = project.tasks.register("selfReinforceApk", SelfReinforceTask::class.java)
         provider.configure {
             group = "reinforce"
-            description = "自研加固：DEX 加密 + 壳 Application + 重签名"
+            description = "自研加固：DEX 加密 + 壳 Application + 重签名（默认自动依赖 assembleRelease，一条命令全链路）"
             selfExt = ext
             projDir = project.projectDir
+        }
+
+        // 一条命令：selfReinforceApk 自动先执行 assembleRelease（懒依赖，assembleRelease 不存在时无害）
+        // 用 TaskCollection 依赖保证 AGP 未 apply / 任务尚未注册也不报错
+        provider.configure {
+            dependsOn(project.tasks.matching { it.name == "assembleRelease" })
+        }
+
+        // 可选：把加固 hook 到 assembleRelease 末尾（assembleRelease 跑完自动追加加固）
+        project.afterEvaluate {
+            if (ext.hookToAssembleRelease.getOrElse(false)) {
+                project.tasks.matching { it.name == "assembleRelease" }.configureEach {
+                    finalizedBy(provider)
+                }
+                project.logger.lifecycle("[self-reinforce] hookToAssembleRelease=true：assembleRelease 完成后自动执行 selfReinforceApk")
+            }
         }
     }
 }

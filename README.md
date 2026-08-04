@@ -112,9 +112,14 @@ selfReinforce {
     // - inputApk  默认取 build/outputs/apk/release 最新 APK
     // - outputApk 默认 inputApk 同目录 app-selfprotect.apk
     // - 签名优先级：显式配置 > android signingConfigs(release) > ~/.android/debug.keystore
+    // - autoBuildRelease 默认 true：selfReinforceApk 自动先跑 assembleRelease
     inputApk.set(layout.buildDirectory.file("outputs/apk/release/app-release.apk"))
     outputApk.set(layout.buildDirectory.file("outputs/apk/release/app-selfprotect.apk"))
     encryptedAssets.addAll(listOf("private/", "config.bin")) // 可选
+
+    // 打包阶段集成（可选）
+    // autoBuildRelease.set(false)          // 关闭自动依赖 assembleRelease
+    // hookToAssembleRelease.set(true)      // 开启后跑 assembleRelease 末尾自动加固
 
     // 多渠道（可选）：配置 + txt 文件
     channels.addAll(listOf("oppo", "xiaomi"))
@@ -132,7 +137,19 @@ selfReinforce {
 }
 ```
 
-执行 `./gradlew selfReinforceApk`。
+**一条命令全链路**（自动完成 打包 → 加固 → 重签名 → 多渠道 → 可选发布/通知）：
+
+```bash
+./gradlew :app:selfReinforceApk
+```
+
+也可在 `selfReinforce` 中开启 `hookToAssembleRelease.set(true)`，之后直接
+
+```bash
+./gradlew :app:assembleRelease
+```
+
+也会在打包完成后自动追加加固。
 
 ### 方式三：远程直接引用（JitPack，无需 clone 仓库）
 

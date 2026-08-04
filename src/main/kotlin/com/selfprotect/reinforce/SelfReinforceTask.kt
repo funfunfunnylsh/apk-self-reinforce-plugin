@@ -26,7 +26,11 @@ abstract class SelfReinforceTask : DefaultTask() {
             val dir = File(project.buildDir, "outputs/apk/release")
             val apks = dir.listFiles { f -> f.isFile && f.name.endsWith(".apk") && !f.name.contains("selfprotect") }
             apks?.maxByOrNull { it.lastModified() }
-                ?: throw IllegalStateException("未找到 release APK（$dir），请先 assembleRelease 或在 selfReinforce.inputApk 指定")
+                ?: throw IllegalStateException(
+                    "未找到 release APK（$dir）。\n" +
+                    "提示：直接运行 ./gradlew :app:selfReinforceApk 会自动先执行 assembleRelease 再加固；\n" +
+                    "或显式配置 selfReinforce.inputApk 指定要加固的 APK。"
+                )
         }
         require(input.exists()) { "输入 APK 不存在：$input" }
 

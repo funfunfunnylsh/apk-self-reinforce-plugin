@@ -20,6 +20,8 @@ dependencies {
     // 读取 android signingConfigs 需要 AGP 类型（compileOnly：不打包进插件，由宿主工程提供）
     compileOnly("com.android.tools.build:gradle:8.7.3")
     testImplementation("junit:junit:4.13.2")
+    // ProjectBuilder 等 Gradle 测试框架（org.gradle.testfixtures）
+    testImplementation(gradleApi())
 }
 
 // 自研 APK 加固插件：DEX 加密 + 壳 Application + Manifest 二进制改写 + 重签名
