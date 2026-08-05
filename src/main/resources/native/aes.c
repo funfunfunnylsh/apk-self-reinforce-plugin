@@ -114,6 +114,108 @@ static void aes_round_dec(uint8_t *s, const uint8_t *rk) {
     inv_mix_columns(s);
 }
 
+/* =====================================================================
+ * 解密 T-table（Td0-Td3）：一次查表完成 InvSubBytes + InvShiftRows +
+ * InvMixColumns，解密速度提升约一个数量级。
+ * 状态采用与 slow 实现一致的"列优先"字节布局（state[r][c] = s[r+4c]），
+ * 每个 32 位字按列装入（w = s[0]|s[1]<<8|s[2]<<16|s[3]<<24，即小端列序）。
+ * 与标准 AES T-table 编码一致（Td0..Td3 已含 ROTL8 轮转）。
+ * ===================================================================== */
+static uint32_t Td0[256], Td1[256], Td2[256], Td3[256];
+static uint8_t INV_SBOX[256];
+static int td_ready = 0;
+
+static void init_td_tables(void) {
+    /* 先建立逆 S-box */
+    for (int i = 0; i < 256; i++) INV_SBOX[SBOX[i]] = (uint8_t)i;
+    /* 列优先小端：word = row0 | row1<<8 | row2<<16 | row3<<24。
+       T 表内置 InvSubBytes + InvMixColumns（等价逆密码的标准约定）：
+       Td0 = 对应当前列行0 字节的贡献系数 (0x0e,0x09,0x0d,0x0b)；
+       Td1/Td2/Td3 = 标准 ROTL8/16/24 轮转，配合下方轮函数的 s0/s3/s2/s1 索引。 */
+    for (int i = 0; i < 256; i++) {
+        uint8_t x = INV_SBOX[i];
+        Td0[i] = (uint32_t)gmul(x, 0x0e) | ((uint32_t)gmul(x, 0x09) << 8)
+               | ((uint32_t)gmul(x, 0x0d) << 16) | ((uint32_t)gmul(x, 0x0b) << 24);
+        Td1[i] = ROTL8(Td0[i]);
+        Td2[i] = ROTL8(ROTL8(Td0[i]));
+        Td3[i] = ROTL8(ROTL8(ROTL8(Td0[i])));
+    }
+    td_ready = 1;
+}
+
+/* 等价逆密码：慢速实现每轮为 InvShiftRows→InvSubBytes→AddRoundKey→InvMixColumns，
+   轮密钥在 InvMix 之前 XOR。T 表把 InvMix 折进查找表后，第 1~9 轮轮密钥必须
+   预先做一次 InvMixColumns 补偿（第 0、10 轮无 InvMix，保持原始）。 */
+static void mix_round_keys(const aes128_ctx *ctx, uint8_t rkM[11 * 16]) {
+    memcpy(rkM, ctx->rk, 11 * 16);
+    uint8_t t[16];
+    for (int r = 1; r < 10; r++) {
+        memcpy(t, rkM + 16 * r, 16);
+        inv_mix_columns(t);
+        memcpy(rkM + 16 * r, t, 16);
+    }
+}
+
+static inline uint32_t rd32le(const uint8_t *p) {
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8)
+         | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+static inline void wr32le(uint8_t *p, uint32_t v) {
+    p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8);
+    p[2] = (uint8_t)(v >> 16); p[3] = (uint8_t)(v >> 24);
+}
+
+void aes128_cbc_decrypt_tab(const aes128_ctx *ctx, const uint8_t iv[16],
+                            const uint8_t *in, uint8_t *out, size_t len) {
+    if (!td_ready) init_td_tables();
+    /* 等价逆密码：1~9 轮轮密钥需预做 InvMixColumns 补偿（0/10 轮无 InvMix，保持原始） */
+    uint8_t rkM[11 * 16];
+    mix_round_keys(ctx, rkM);
+    uint8_t prev[16];
+    memcpy(prev, iv, 16);
+    for (size_t off = 0; off < len; off += 16) {
+        uint32_t s0 = rd32le(in + off);
+        uint32_t s1 = rd32le(in + off + 4);
+        uint32_t s2 = rd32le(in + off + 8);
+        uint32_t s3 = rd32le(in + off + 12);
+
+        uint32_t t0, t1, t2, t3;
+        s0 ^= rd32le(rkM + 0); s1 ^= rd32le(rkM + 4);
+        s2 ^= rd32le(rkM + 8); s3 ^= rd32le(rkM + 12);
+
+        for (int r = 1; r < 10; r++) {
+            const uint8_t *rk = rkM + 16 * r;
+            t0 = Td0[s0 & 0xFF] ^ Td1[(s3 >> 8) & 0xFF] ^ Td2[(s2 >> 16) & 0xFF] ^ Td3[(s1 >> 24) & 0xFF] ^ rd32le(rk);
+            t1 = Td0[s1 & 0xFF] ^ Td1[(s0 >> 8) & 0xFF] ^ Td2[(s3 >> 16) & 0xFF] ^ Td3[(s2 >> 24) & 0xFF] ^ rd32le(rk + 4);
+            t2 = Td0[s2 & 0xFF] ^ Td1[(s1 >> 8) & 0xFF] ^ Td2[(s0 >> 16) & 0xFF] ^ Td3[(s3 >> 24) & 0xFF] ^ rd32le(rk + 8);
+            t3 = Td0[s3 & 0xFF] ^ Td1[(s2 >> 8) & 0xFF] ^ Td2[(s1 >> 16) & 0xFF] ^ Td3[(s0 >> 24) & 0xFF] ^ rd32le(rk + 12);
+            s0 = t0; s1 = t1; s2 = t2; s3 = t3;
+        }
+
+        /* 末轮：InvShiftRows + InvSubBytes（无 InvMixColumns）+ AddRoundKey，再 XOR prev */
+        const uint8_t *rkf = rkM + 10 * 16;
+        uint8_t a0 = INV_SBOX[s0 & 0xFF], a1 = INV_SBOX[(s3 >> 8) & 0xFF],
+                 a2 = INV_SBOX[(s2 >> 16) & 0xFF], a3 = INV_SBOX[(s1 >> 24) & 0xFF];
+        uint32_t c0 = a0 | (a1 << 8) | (a2 << 16) | (a3 << 24);
+        a0 = INV_SBOX[s1 & 0xFF]; a1 = INV_SBOX[(s0 >> 8) & 0xFF];
+        a2 = INV_SBOX[(s3 >> 16) & 0xFF]; a3 = INV_SBOX[(s2 >> 24) & 0xFF];
+        uint32_t c1 = a0 | (a1 << 8) | (a2 << 16) | (a3 << 24);
+        a0 = INV_SBOX[s2 & 0xFF]; a1 = INV_SBOX[(s1 >> 8) & 0xFF];
+        a2 = INV_SBOX[(s0 >> 16) & 0xFF]; a3 = INV_SBOX[(s3 >> 24) & 0xFF];
+        uint32_t c2 = a0 | (a1 << 8) | (a2 << 16) | (a3 << 24);
+        a0 = INV_SBOX[s3 & 0xFF]; a1 = INV_SBOX[(s2 >> 8) & 0xFF];
+        a2 = INV_SBOX[(s1 >> 16) & 0xFF]; a3 = INV_SBOX[(s0 >> 24) & 0xFF];
+        uint32_t c3 = a0 | (a1 << 8) | (a2 << 16) | (a3 << 24);
+
+        wr32le(out + off, c0 ^ rd32le(rkf) ^ rd32le(prev));
+        wr32le(out + off + 4, c1 ^ rd32le(rkf + 4) ^ rd32le(prev + 4));
+        wr32le(out + off + 8, c2 ^ rd32le(rkf + 8) ^ rd32le(prev + 8));
+        wr32le(out + off + 12, c3 ^ rd32le(rkf + 12) ^ rd32le(prev + 12));
+        memcpy(prev, in + off, 16);
+    }
+}
+
 void aes128_init_dec(aes128_ctx *ctx, const uint8_t key[16]) {
     /* 密钥扩展：标准 AES-128（11 轮，每轮 16 字节） */
     uint8_t w[4 * 44];
@@ -141,6 +243,13 @@ void aes128_init_dec(aes128_ctx *ctx, const uint8_t key[16]) {
 
 void aes128_cbc_decrypt(const aes128_ctx *ctx, const uint8_t iv[16],
                         const uint8_t *in, uint8_t *out, size_t len) {
+    /* 默认走 T-table 加速路径（约 10 倍提速）；原逐位实现保留于下方 aes128_cbc_decrypt_slow */
+    aes128_cbc_decrypt_tab(ctx, iv, in, out, len);
+}
+
+/* ============ 原逐位实现（保留作自校验/回退对照，正式链路不调用） ============ */
+void aes128_cbc_decrypt_slow(const aes128_ctx *ctx, const uint8_t iv[16],
+                             const uint8_t *in, uint8_t *out, size_t len) {
     uint8_t prev[16], cur[16];
     memcpy(prev, iv, 16);
     for (size_t off = 0; off < len; off += 16) {

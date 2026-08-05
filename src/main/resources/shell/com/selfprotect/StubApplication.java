@@ -45,10 +45,13 @@ public class StubApplication extends Application {
     private static final String WORK_DIR = "selfprotect";
 
     /**
-     * 内存加载开关（v1.2.3 默认 false）：
+     * 内存加载开关（v1.4.0 实测结论：保持 false 最稳）：
      *  - false：DexClassLoader 落盘（v1.1.x 真机验证过的路径，最稳）
-     *  - true ：API26+ InMemoryDexClassLoader（零落盘），失败自动回退落盘
-     * 真机稳定后可切回 true 以恢复"载荷不落盘"。
+     *  - true ：API26+ InMemoryDexClassLoader（零落盘，加载快 ~1.4s）
+     *  v1.4.0 曾启用 InMemory 加速，但真实大包（extractNativeLibs=false，so 内嵌
+     *  base.apk!）在 androidx.startup Provider 阶段 System.loadLibrary("mmkv") 失败崩溃。
+     *  InMemoryDexClassLoader 的原生库解析对 base.apk!/lib 内嵌 so 不可靠，即使反射
+     *  合并 nativeLibraryDirectories 也无法解决。故回退落盘路径（稳定，dex2oat ~6s）。
      */
     private static final boolean USE_IN_MEMORY_LOADER = false;
 
@@ -86,7 +89,9 @@ public class StubApplication extends Application {
             if (sigInfo != null) {
                 Log.w(TAG, "anti-tamper triggered: " + sigInfo);
             }
-            String payloadInfo = verifyPayloadHash(base);
+            // 合并读取：payload.dat 只读一次，先校验哈希再解密，避免重复 I/O（18.5MB）
+            byte[] encrypted = ShellCrypto.readAll(base.getAssets().open(PAYLOAD_ASSET));
+            String payloadInfo = verifyPayloadHash(base, encrypted);
             if (payloadInfo != null) {
                 Log.w(TAG, "payload integrity triggered: " + payloadInfo);
             }
@@ -104,8 +109,8 @@ public class StubApplication extends Application {
             String realAppName = readConfig(base);
             Log.i(TAG, "real application class: " + realAppName);
 
-            // 解密 payload（native 内存解密，不落盘）
-            byte[] payloadZip = decryptPayloadInMemory(base);
+            // 解密 payload（native 内存解密，不落盘；复用已读的密文，不再二次读取）
+            byte[] payloadZip = decryptPayloadInMemory(base, encrypted);
             Log.i(TAG, "payload.zip size=" + payloadZip.length);
 
             ClassLoader newLoader = installClassLoaderInMemory(base, payloadZip);
@@ -243,10 +248,13 @@ public class StubApplication extends Application {
     /**
      * 载荷完整性校验：解密前对 assets/selfprotect/payload.dat 密文计算 SHA-256，
      * 与打包时预置（XOR 掩码）的哈希比对，防止 APK 内的加密载荷被整体替换。
-     * 返回 null 表示通过；未预置哈希视为通过。
+     * 返回 null 表示通过；未预置哈希视为通过（encrypted 可为 null，此时按需读取）。
      */
-    private static String verifyPayloadHash(Context base) {
+    private static String verifyPayloadHash(Context base, byte[] encrypted) {
         try {
+            if (encrypted == null) {
+                encrypted = ShellCrypto.readAll(base.getAssets().open("selfprotect/payload.dat"));
+            }
             byte[] masked = ShellCrypto.readAll(base.getAssets().open("selfprotect/payload_hash.txt"));
             if (masked.length == 0) {
                 return null;
@@ -255,7 +263,6 @@ public class StubApplication extends Application {
                 return "payload hash length mismatch";
             }
             byte[] expected = unmask(masked, PAYLOAD_MASK);
-            byte[] encrypted = ShellCrypto.readAll(base.getAssets().open("selfprotect/payload.dat"));
             byte[] actual = sha256Bytes(encrypted);
             if (!java.util.Arrays.equals(expected, actual)) {
                 return "payload hash mismatch";
@@ -392,8 +399,10 @@ public class StubApplication extends Application {
      * native 内存解密 payload.dat -> zip 字节（不落盘）。
      * native 失败时回退 Java 解密（兼容旧包/密钥不一致场景，便于诊断）。
      */
-    private static byte[] decryptPayloadInMemory(Context base) throws Exception {
-        byte[] encrypted = ShellCrypto.readAll(base.getAssets().open(PAYLOAD_ASSET));
+    private static byte[] decryptPayloadInMemory(Context base, byte[] encrypted) throws Exception {
+        if (encrypted == null) {
+            encrypted = ShellCrypto.readAll(base.getAssets().open(PAYLOAD_ASSET));
+        }
         if (ShellNative.isLoaded()) {
             byte[] plain = ShellNative.decryptPayload(encrypted);
             if (plain != null) {
@@ -599,6 +608,9 @@ public class StubApplication extends Application {
                 ByteBuffer[] dexs = toDirectBuffers(orderedDexList(dexMap));
                 newLoader = new InMemoryDexClassLoader(dexs, oldLoader);
                 Log.i(TAG, "InMemoryDexClassLoader created, dex count=" + dexs.length);
+                // InMemory 的原生库路径独立于宿主，需合并宿主 nativeLibraryDirectories，
+                // 否则 System.loadLibrary（如 MMKV）找不到 so 而崩溃。
+                patchNativeLibDirectories(newLoader, oldLoader);
             } catch (Throwable t) {
                 newLoader = null;
                 Log.w(TAG, "InMemoryDexClassLoader failed: " + t);
@@ -710,6 +722,36 @@ public class StubApplication extends Application {
         ApplicationInfo info = base.getApplicationInfo();
         return info.nativeLibraryDir + File.pathSeparator
                 + info.sourceDir + "!/lib/" + android.os.Build.SUPPORTED_ABIS[0];
+    }
+
+    /**
+     * InMemoryDexClassLoader 的原生库路径独立于宿主 ClassLoader，导致 System.loadLibrary
+     * （如 MMKV）找不到 so。这里把宿主 pathList 的 nativeLibraryDirectories 合并进内存 loader，
+     * 保持原生库可加载。失败静默（memfd/落盘路径自带 librarySearchPath，无需此修补）。
+     */
+    private static void patchNativeLibDirectories(ClassLoader newLoader, ClassLoader oldLoader) {
+        try {
+            if (newLoader == null || oldLoader == null) {
+                return;
+            }
+            Object newPathList = findField(newLoader, "pathList").get(newLoader);
+            Object oldPathList = findField(oldLoader, "pathList").get(oldLoader);
+            java.util.List<?> oldDirs = (java.util.List<?>) findField(oldPathList, "nativeLibraryDirectories").get(oldPathList);
+            if (oldDirs == null || oldDirs.isEmpty()) {
+                return;
+            }
+            // 合并：新 loader 已有的 + 宿主的（去重）
+            java.util.LinkedHashSet<Object> merged = new java.util.LinkedHashSet<>();
+            Object newDirs = findField(newPathList, "nativeLibraryDirectories").get(newPathList);
+            if (newDirs instanceof java.util.List) {
+                merged.addAll((java.util.List<?>) newDirs);
+            }
+            merged.addAll(oldDirs);
+            findField(newPathList, "nativeLibraryDirectories").set(newPathList, new java.util.ArrayList<>(merged));
+            Log.i(TAG, "nativeLibraryDirectories patched for InMemory loader, dirs=" + merged.size());
+        } catch (Throwable t) {
+            Log.w(TAG, "patchNativeLibDirectories failed: " + t);
+        }
     }
 
     private static void appendPaths(StringBuilder sb, Object dirs) {

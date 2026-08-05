@@ -22,6 +22,12 @@ void aes128_cbc_decrypt(const aes128_ctx *ctx, const uint8_t iv[16],
                         const uint8_t *in, uint8_t *out, size_t len);
 
 /*
+ * T-table 加速版 CBC 解密（约 10 倍提速）。其余约定同 aes128_cbc_decrypt。
+ */
+void aes128_cbc_decrypt_tab(const aes128_ctx *ctx, const uint8_t iv[16],
+                            const uint8_t *in, uint8_t *out, size_t len);
+
+/*
  * 去除 PKCS7 padding，返回明文长度；padding 非法返回 -1。
  */
 int aes128_cbc_pkcs7_unpad(const uint8_t *buf, size_t len);
